@@ -94,7 +94,7 @@ export function CargaDatosTab() {
                 </CardTitle>
                 {status && (
                   <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
-                    {n(status[tipo as keyof StatusData]?.registros ?? 0)} filas
+                    {n(status[t.tipo as keyof StatusData]?.registros ?? 0)} filas
                   </span>
                 )}
               </div>
