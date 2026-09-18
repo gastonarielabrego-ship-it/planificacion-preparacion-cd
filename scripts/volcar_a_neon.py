@@ -34,12 +34,16 @@ def rows_de(con, tabla):
 
 
 def serializar(rows):
-    # fechas ISO y enteros planos para JSON compacto
+    # Prisma/SQLite guarda DateTime como milisegundos epoch (integer)
     out = []
     for r in rows:
         f = r.get("fecha")
-        if hasattr(f, "strftime"):
+        if isinstance(f, (int, float)):
+            r["fecha"] = time.strftime("%Y-%m-%d", time.gmtime(f / 1000))
+        elif hasattr(f, "strftime"):
             r["fecha"] = f.strftime("%Y-%m-%d")
+        elif isinstance(f, str) and len(f) >= 10:
+            r["fecha"] = f[:10]
         out.append(r)
     return out
 
@@ -92,7 +96,7 @@ def main():
                         i, d = enviar(args.url, api_tabla, payload[j:j + LOTE // 2], primero, batch_id, False)
                         enviados += i; desc += d; primero = False
                 else:
-                    i, d = enviar(args.url, api_tabla, payload, primero, False)
+                    i, d = enviar(args.url, api_tabla, payload, primero, batch_id, False)
                     enviados += i; desc += d; primero = False
                 buffer = []
                 print(f"  {min(enviados+desc+ (len(buffer)), total):,}/{total:,}", end="\r")
@@ -102,7 +106,7 @@ def main():
             data = json.dumps(payload).encode()
             if len(data) > TAM_MAX_BYTES:
                 mitad = len(payload) // 2
-                i, d = enviar(args.url, api_tabla, payload[:mitad], primero, False)
+                i, d = enviar(args.url, api_tabla, payload[:mitad], primero, batch_id, False)
                 enviados += i; desc += d; primero = False
                 i, d = enviar(args.url, api_tabla, payload[mitad:], False, batch_id, True)
                 enviados += i; desc += d
