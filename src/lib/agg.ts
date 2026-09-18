@@ -1,0 +1,475 @@
+// Agregaciones server-side para los modulos del dashboard.
+// Los volumenes (H61 ~39k op-dias, TM ~12k, Ola ~1k, Picking <=1M) se procesan en memoria.
+import { db } from '@/lib/db'
+
+export interface Filtros {
+  from?: string
+  to?: string
+  turno?: string
+  funcion?: string
+}
+
+function rango(f: Filtros): { gte?: Date; lte?: Date } {
+  const r: { gte?: Date; lte?: Date } = {}
+  if (f.from) r.gte = new Date(f.from + 'T00:00:00.000Z')
+  if (f.to) r.lte = new Date(f.to + 'T23:59:59.999Z')
+  return r
+}
+const dia = (d: Date) => d.toISOString().slice(0, 10)
+
+// ============ RESUMEN EJECUTIVO ============
+export async function getResumen() {
+  const [olaCount, h61Count, tmCount, pickCount, batches] = await Promise.all([
+    db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _avg: { ola: true, total: true } }),
+    db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _sum: { bultos: true, horasActivas: true, extras: true, bultosExtras: true } }),
+    db.tiempoMuerto.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _sum: { minutos: true, minutosEf: true } }),
+    db.pickingEvento.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    db.uploadBatch.findMany({ orderBy: { createdAt: 'desc' }, take: 10 }),
+  ])
+
+  const opsUnicos = await db.h61OpDia.findMany({ select: { operario: true }, distinct: ['operario'] })
+
+  // top categorias TM (excluye bajas ESTADO B; OR con null es clave: NOT excludes NULLs en SQL)
+  const tmCats = await db.tiempoMuerto.groupBy({
+    by: ['categoria'],
+    _sum: { minutosEf: true },
+    _count: true,
+    where: { OR: [{ estado: null }, { estado: { not: 'B' } }] },
+    orderBy: { _sum: { minutosEf: 'desc' } },
+  })
+
+  const horasTotales = h61Count._sum.horasActivas ?? 0
+  const bultos = h61Count._sum.bultos ?? 0
+  const bultosExtras = h61Count._sum.bultosExtras ?? 0
+  const totalMinTM = tmCats.reduce((a, c) => a + (c._sum.minutosEf ?? 0), 0)
+
+  return {
+    datasets: {
+      ola: { registros: olaCount._count, desde: olaCount._min.fecha, hasta: olaCount._max.fecha, olaMedia: Math.round(olaCount._avg.ola ?? 0), totalMedia: Math.round(olaCount._avg.total ?? 0) },
+      h61: { registros: h61Count._count, desde: h61Count._min.fecha, hasta: h61Count._max.fecha, bultos, horas: horasTotales, productividad: horasTotales ? +(bultos / horasTotales).toFixed(1) : 0, operarios: opsUnicos.length, extrasHoras: h61Count._sum.extras ?? 0, bultosExtras, pctBultosExtras: bultos ? +((bultosExtras / bultos) * 100).toFixed(1) : 0 },
+      tm: { registros: tmCount._count, desde: tmCount._min.fecha, hasta: tmCount._max.fecha, minutos: totalMinTM, horas: +(totalMinTM / 60).toFixed(0), pctSobreHorasH61: horasTotales ? +(((totalMinTM / 60) / horasTotales) * 100).toFixed(1) : 0 },
+      picking: { registros: pickCount._count, desde: pickCount._min.fecha, hasta: pickCount._max.fecha },
+    },
+    topCategoriasTM: tmCats.slice(0, 6).map((c) => ({ categoria: c.categoria, minutos: c._sum.minutosEf ?? 0, registros: c._count })),
+    batches: batches.map((b) => ({ ...b, createdAt: b.createdAt.toISOString() })),
+  }
+}
+
+// ============ OLA / PLANIFICACION ============
+export async function getPlanificacion(f: Filtros) {
+  const where = { fecha: rango(f) }
+  const [ola, h61] = await Promise.all([
+    db.olaDia.findMany({ where, orderBy: { fecha: 'asc' } }),
+    db.h61OpDia.findMany({ where: { fecha: rango(f) }, select: { fecha: true, operario: true, horasActivas: true, bultos: true, bultosBase: true, bultosExtras: true, extras: true, turno: true, funcion: true } }),
+  ])
+
+  const porDia = new Map<string, { ops: number; opsExtras: number; horas: number; horasExtras: number; bultos: number; bultosBase: number; bultosExtras: number }>()
+  for (const r of h61) {
+    const k = dia(r.fecha)
+    let p = porDia.get(k)
+    if (!p) { p = { ops: 0, opsExtras: 0, horas: 0, horasExtras: 0, bultos: 0, bultosBase: 0, bultosExtras: 0 }; porDia.set(k, p) }
+    p.ops += 1
+    if (r.extras > 0) p.opsExtras += 1
+    p.horas += r.horasActivas
+    p.horasExtras += r.extras
+    p.bultos += r.bultos
+    p.bultosBase += r.bultosBase
+    p.bultosExtras += r.bultosExtras
+  }
+
+  const fechas = new Set<string>([...ola.map((o) => dia(o.fecha)), ...porDia.keys()])
+  const serie = [...fechas].sort().map((k) => {
+    const o = ola.find((x) => dia(x.fecha) === k)
+    const p = porDia.get(k)
+    const demanda = o?.total ?? null
+    const prodHora = p && p.horas ? p.bultos / p.horas : null
+    // capacidad si se suprimen extras: mantiene bultosBase (produccion en <=8h por operario)
+    const faltanteSinExtras = p && demanda != null ? Math.max(0, demanda - p.bultosBase) : null
+    return {
+      fecha: k,
+      ola: o?.ola ?? null,
+      pendiente: o?.pendiente ?? null,
+      demanda,
+      preparado: p?.bultos ?? null,
+      ops: p?.ops ?? null,
+      opsExtras: p?.opsExtras ?? null,
+      horas: p ? +p.horas.toFixed(1) : null,
+      horasExtras: p?.horasExtras ?? 0,
+      prodHora: prodHora != null ? +prodHora.toFixed(1) : null,
+      bultosBase: p?.bultosBase ?? null,
+      bultosExtras: p?.bultosExtras ?? null,
+      faltanteSinExtras: faltanteSinExtras != null ? Math.round(faltanteSinExtras) : null,
+    }
+  })
+
+  // agregados por mes
+  const porMes = new Map<string, { ola: number; demanda: number; preparado: number; dias: number; diasExtras: number; horasExtras: number; faltante: number }>()
+  for (const s of serie) {
+    const k = s.fecha.slice(0, 7)
+    let m = porMes.get(k)
+    if (!m) { m = { ola: 0, demanda: 0, preparado: 0, dias: 0, diasExtras: 0, horasExtras: 0, faltante: 0 }; porMes.set(k, m) }
+    m.dias += 1
+    if (s.demanda != null) m.demanda += s.demanda
+    if (s.ola != null) m.ola += s.ola
+    if (s.preparado != null) m.preparado += s.preparado
+    if ((s.opsExtras ?? 0) > 0) m.diasExtras += 1
+    m.horasExtras += s.horasExtras ?? 0
+    if (s.faltanteSinExtras != null) m.faltante += s.faltanteSinExtras
+  }
+  const meses = [...porMes.entries()].sort().map(([mes, v]) => ({ mes, ...v }))
+
+  const conExtras = serie.filter((s) => (s.opsExtras ?? 0) > 0)
+  const resumen = {
+    dias: serie.length,
+    diasConExtras: conExtras.length,
+    pctDiasConExtras: serie.length ? +((conExtras.length / serie.length) * 100).toFixed(1) : 0,
+    faltantePromedioSinExtras: conExtras.length ? Math.round(conExtras.reduce((a, s) => a + (s.faltanteSinExtras ?? 0), 0) / conExtras.length) : 0,
+    faltanteTotalSinExtras: conExtras.reduce((a, s) => a + (s.faltanteSinExtras ?? 0), 0),
+    horasExtrasTotales: serie.reduce((a, s) => a + (s.horasExtras ?? 0), 0),
+    bultosExtrasTotales: serie.reduce((a, s) => a + (s.bultosExtras ?? 0), 0),
+    prodHoraMedia: (() => {
+      const vals = serie.filter((s) => s.prodHora != null && s.preparado != null && (s.preparado ?? 0) > 0)
+      const totB = vals.reduce((a, s) => a + (s.preparado ?? 0), 0)
+      const totH = vals.reduce((a, s) => a + (s.horas ?? 0), 0)
+      return totH ? +(totB / totH).toFixed(1) : null
+    })(),
+  }
+
+  return { serie, meses, resumen }
+}
+
+// ============ PRODUCTIVIDAD H61 ============
+export async function getH61(f: Filtros) {
+  const where: Record<string, unknown> = { fecha: rango(f) }
+  if (f.turno) where.turno = f.turno
+  if (f.funcion) where.funcion = f.funcion
+
+  const [ops, th, ci] = await Promise.all([
+    db.h61OpDia.findMany({ where }),
+    db.h61TurnoHora.findMany({ where: { fecha: rango(f) } }),
+    db.h61Circuito.findMany({ where: { fecha: rango(f) } }),
+  ])
+
+  // Perfil 24h: horas 0-5 del turno noche (N) pertenecen al dia calendario siguiente
+  const porHora = Array.from({ length: 24 }, () => ({ bultos: 0, operarios: new Set<string>() }))
+  const opSeen = new Map<string, Set<number>>() // fecha|op -> horas
+  for (const r of th) {
+    const fechaBase = new Date(r.fecha)
+    const esNocheMadrugada = r.turno === 'N' && r.hora <= 5
+    if (esNocheMadrugada) fechaBase.setUTCDate(fechaBase.getUTCDate() + 1)
+    const h = porHora[r.hora]
+    h.bultos += r.bultos
+    const k = `${dia(fechaBase)}|${r.turno}`
+    // operarios por hora aproximamos con el maximo informado ese dia-turno
+    const set = opSeen.get(k) ?? new Set<number>()
+    set.add(r.operarios)
+    opSeen.set(k, set)
+  }
+  const perfilHora = porHora.map((h, i) => ({
+    hora: i,
+    etiqueta: `${String(i).padStart(2, '0')}:00`,
+    bultos: h.bultos,
+    operariosProm: (() => {
+      const vals = [...opSeen.values()].map((s) => Math.max(...s))
+      return vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : 0
+    })(),
+  }))
+  const horasConDatos = perfilHora.filter((p) => p.bultos > 0)
+  const pico = horasConDatos.reduce((a, b) => (b.bultos > a.bultos ? b : a), horasConDatos[0] ?? { hora: 0, etiqueta: '-', bultos: 0, operariosProm: 0 })
+  const valle = horasConDatos.reduce((a, b) => (b.bultos < a.bultos ? b : a), horasConDatos[0] ?? { hora: 0, etiqueta: '-', bultos: 0, operariosProm: 0 })
+
+  // por turno
+  const turnoAgg = new Map<string, { bultos: number; horas: number; opsDias: number; bultosExtras: number }>()
+  for (const r of th) {
+    let t = turnoAgg.get(r.turno)
+    if (!t) { t = { bultos: 0, horas: 0, opsDias: 0, bultosExtras: 0 }; turnoAgg.set(r.turno, t) }
+    t.bultos += r.bultos
+  }
+  const turnoHoras = new Map<string, Set<string>>()
+  for (const r of ops) {
+    let t = turnoHoras.get(r.turno)
+    if (!t) { t = new Set(); turnoHoras.set(r.turno, t) }
+    t.add(`${dia(r.fecha)}|${r.operario}`)
+    t.add(`${dia(r.fecha)}|${r.operario}|h|${r.horasActivas}`)
+  }
+  for (const [turno, set] of turnoHoras) {
+    const horas = [...set].filter((x) => x.includes('|h|')).reduce((a, x) => a + parseInt(x.split('|h|')[1], 10), 0)
+    const opsDias = [...set].filter((x) => !x.includes('|h|')).length
+    const t = turnoAgg.get(turno)
+    if (t) { t.horas = horas; t.opsDias = opsDias }
+  }
+  for (const r of ops) {
+    const t = turnoAgg.get(r.turno)
+    if (t) t.bultosExtras += r.bultosExtras
+  }
+  const porTurno = [...turnoAgg.entries()].map(([turno, v]) => ({
+    turno,
+    nombre: turno === 'M' ? 'Mañana' : turno === 'T' ? 'Tarde' : turno === 'N' ? 'Noche' : turno,
+    ...v,
+    prodHora: v.horas ? +(v.bultos / v.horas).toFixed(1) : 0,
+  })).sort((a, b) => b.bultos - a.bultos)
+
+  // heatmap turno x hora
+  const heat = ['M', 'T', 'N'].map((turno) => {
+    const fila = Array.from({ length: 24 }, () => 0)
+    for (const r of th) if (r.turno === turno) fila[r.hora] = Math.max(fila[r.hora], Math.round(r.bultos / Math.max(1, r.operarios)))
+    return { turno, valores: fila }
+  })
+
+  // circuitos
+  const ciAgg = new Map<string, number>()
+  for (const r of ci) ciAgg.set(r.circuito, (ciAgg.get(r.circuito) ?? 0) + r.bultos)
+  const circuitos = [...ciAgg.entries()].map(([circuito, bultos]) => ({ circuito, bultos })).sort((a, b) => b.bultos - a.bultos)
+
+  // distribucion de jornadas 8h vs extras
+  const distHoras = new Map<number, number>()
+  for (const r of ops) distHoras.set(r.horasActivas, (distHoras.get(r.horasActivas) ?? 0) + 1)
+  const distribucion = [...distHoras.entries()].sort((a, b) => a[0] - b[0]).map(([horas, opsDia]) => ({ horas, opsDia }))
+
+  const opsExtras = ops.filter((r) => r.extras > 0)
+  const extrasResumen = {
+    opsDiasTotal: ops.length,
+    opsDiasConExtras: opsExtras.length,
+    pctOpsDiasConExtras: ops.length ? +((opsExtras.length / ops.length) * 100).toFixed(1) : 0,
+    horasExtras: opsExtras.reduce((a, r) => a + r.extras, 0),
+    bultosExtras: opsExtras.reduce((a, r) => a + r.bultosExtras, 0),
+    bultosTotales: ops.reduce((a, r) => a + r.bultos, 0),
+  }
+  extrasResumen.pctBultosExtras = extrasResumen.bultosTotales ? +((extrasResumen.bultosExtras / extrasResumen.bultosTotales) * 100).toFixed(1) : 0
+
+  // top operarios por productividad (minimo 80 horas)
+  const opAgg = new Map<string, { nombre: string | null; bultos: number; horas: number; extras: number; dias: number; funcion: string }>()
+  for (const r of ops) {
+    let o = opAgg.get(r.operario)
+    if (!o) { o = { nombre: r.nombre, bultos: 0, horas: 0, extras: 0, dias: 0, funcion: r.funcion }; opAgg.set(r.operario, o) }
+    if (!o.nombre && r.nombre) o.nombre = r.nombre
+    o.bultos += r.bultos
+    o.horas += r.horasActivas
+    o.extras += r.extras
+    o.dias += 1
+  }
+  const operarios = [...opAgg.entries()]
+    .map(([operario, o]) => ({ operario, nombre: o.nombre ?? operario, bultos: o.bultos, horas: o.horas, extras: o.extras, dias: o.dias, prodHora: o.horas ? +(o.bultos / o.horas).toFixed(1) : 0 }))
+    .filter((o) => o.horas >= 80)
+    .sort((a, b) => b.prodHora - a.prodHora)
+
+  // serie diaria
+  const serDia = new Map<string, { bultos: number; horas: number; ops: number }>()
+  for (const r of ops) {
+    const k = dia(r.fecha)
+    let s = serDia.get(k)
+    if (!s) { s = { bultos: 0, horas: 0, ops: 0 }; serDia.set(k, s) }
+    s.bultos += r.bultos
+    s.horas += r.horasActivas
+    s.ops += 1
+  }
+  const serie = [...serDia.entries()].sort().map(([fecha, v]) => ({ fecha, ...v, prodHora: v.horas ? +(v.bultos / v.horas).toFixed(1) : 0 }))
+
+  const bultosTot = ops.reduce((a, r) => a + r.bultos, 0)
+  const horasTot = ops.reduce((a, r) => a + r.horasActivas, 0)
+
+  return {
+    perfilHora,
+    pico: { ...pico },
+    valle: { ...valle },
+    porTurno,
+    heat,
+    circuitos: circuitos.slice(0, 17),
+    distribucion,
+    extrasResumen,
+    operariosTop: operarios.slice(0, 15),
+    operariosBottom: operarios.slice(-15).reverse(),
+    operariosExtras: [...opAgg.entries()].map(([operario, o]) => ({ operario, nombre: o.nombre ?? operario, extras: o.extras, dias: o.dias })).filter((o) => o.extras > 0).sort((a, b) => b.extras - a.extras).slice(0, 15),
+    serie,
+    resumen: { bultos: bultosTot, horas: horasTot, prodHora: horasTot ? +(bultosTot / horasTot).toFixed(1) : 0, opsUnicos: opAgg.size },
+  }
+}
+
+// ============ TIEMPOS MUERTOS ============
+export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
+  const where: Record<string, unknown> = { fecha: rango(f) }
+  if (!f.incluirBajas) where.OR = [{ estado: null }, { estado: { not: 'B' } }]
+  if (f.turno) where.turno = f.turno
+
+  const rows = await db.tiempoMuerto.findMany({ where })
+
+  const totalMin = rows.reduce((a, r) => a + r.minutosEf, 0)
+  const cats = new Map<string, { minutos: number; registros: number }>()
+  for (const r of rows) {
+    let c = cats.get(r.categoria)
+    if (!c) { c = { minutos: 0, registros: 0 }; cats.set(r.categoria, c) }
+    c.minutos += r.minutosEf
+    c.registros += 1
+  }
+  const porCategoria = [...cats.entries()].map(([categoria, v]) => ({ categoria, ...v, pct: totalMin ? +((v.minutos / totalMin) * 100).toFixed(1) : 0 })).sort((a, b) => b.minutos - a.minutos)
+
+  // nave x pasillo (ESPERA UBICACION)
+  const naves = new Map<string, { minutos: number; registros: number; pasillos: Map<string, { minutos: number; registros: number }> }>()
+  for (const r of rows) {
+    if (r.categoria !== 'ESPERA UBICACION' || !r.nave) continue
+    let n = naves.get(r.nave)
+    if (!n) { n = { minutos: 0, registros: 0, pasillos: new Map() }; naves.set(r.nave, n) }
+    n.minutos += r.minutosEf
+    n.registros += 1
+    const pk = r.pasillo ?? '?'
+    let p = n.pasillos.get(pk)
+    if (!p) { p = { minutos: 0, registros: 0 }; n.pasillos.set(pk, p) }
+    p.minutos += r.minutosEf
+    p.registros += 1
+  }
+  const porNave = [...naves.entries()].map(([nave, v]) => ({
+    nave,
+    minutos: v.minutos,
+    registros: v.registros,
+    pasillos: [...v.pasillos.entries()].map(([pasillo, p]) => ({ pasillo, ...p })).sort((a, b) => b.minutos - a.minutos),
+  })).sort((a, b) => b.minutos - a.minutos)
+
+  // por turno y por dia
+  const turnosMap = new Map<string, number>()
+  const diasMap = new Map<string, number>()
+  const horasMap = new Map<number, number>()
+  const detalles = new Map<string, { minutos: number; registros: number }>()
+  for (const r of rows) {
+    turnosMap.set(r.turno, (turnosMap.get(r.turno) ?? 0) + r.minutosEf)
+    const k = dia(r.fecha)
+    diasMap.set(k, (diasMap.get(k) ?? 0) + r.minutosEf)
+    if (r.horaDesde != null) horasMap.set(Math.floor(r.horaDesde / 60), (horasMap.get(Math.floor(r.horaDesde / 60)) ?? 0) + r.minutosEf)
+    const dk = r.detalle ?? '(sin dato)'
+    let d = detalles.get(dk)
+    if (!d) { d = { minutos: 0, registros: 0 }; detalles.set(dk, d) }
+    d.minutos += r.minutosEf
+    d.registros += 1
+  }
+  const NOM_TURNO: Record<string, string> = { TM: 'Mañana', TT: 'Tarde', TN: 'Noche' }
+  const porTurno = [...turnosMap.entries()].map(([t, minutos]) => ({ turno: t, nombre: NOM_TURNO[t] ?? t, minutos })).sort((a, b) => b.minutos - a.minutos)
+  const porDia = [...diasMap.entries()].sort().map(([fecha, minutos]) => ({ fecha, minutos }))
+  const porHora = Array.from({ length: 24 }, (_, h) => ({ hora: h, etiqueta: `${String(h).padStart(2, '0')}:00`, minutos: horasMap.get(h) ?? 0 }))
+  const topDetalles = [...detalles.entries()].map(([detalle, v]) => ({ detalle, ...v })).sort((a, b) => b.minutos - a.minutos).slice(0, 25)
+
+  // cruces codigo x categoria
+  const codCat = new Map<string, { code: number | null; categoria: string; minutos: number; registros: number }>()
+  for (const r of rows) {
+    const k = `${r.motivoCode ?? '-'}|${r.categoria}`
+    let c = codCat.get(k)
+    if (!c) { c = { code: r.motivoCode, categoria: r.categoria, minutos: 0, registros: 0 }; codCat.set(k, c) }
+    c.minutos += r.minutosEf
+    c.registros += 1
+  }
+  const codigoCategoria = [...codCat.values()].sort((a, b) => b.minutos - a.minutos).slice(0, 20)
+
+  return {
+    totalMin,
+    totalHoras: +(totalMin / 60).toFixed(1),
+    registros: rows.length,
+    porCategoria,
+    porNave,
+    porTurno,
+    porDia,
+    porHora,
+    topDetalles,
+    codigoCategoria,
+    navesResumen: {
+      minutos: porNave.reduce((a, n) => a + n.minutos, 0),
+      naves: porNave.length,
+      pasillos: porNave.reduce((a, n) => a + n.pasillos.length, 0),
+    },
+  }
+}
+
+// ============ PICKING ============
+export async function getPicking(f: Filtros) {
+  const where = { fecha: rango(f) }
+  const [count, ops] = await Promise.all([
+    db.pickingEvento.count({ where }),
+    db.pickingEvento.findMany({ where, orderBy: [{ fecha: 'asc' }, { operario: 'asc' }, { horaMin: 'asc' }], select: { fecha: true, operario: true, horaMin: true, bultos: true, soporte: true, circuito: true } }),
+  ])
+
+  if (!count) {
+    return { registros: 0, vacio: true as const }
+  }
+
+  // gaps entre eventos consecutivos por operario y dia
+  const buckets = [
+    { label: '0-1 min', min: 0, max: 1 },
+    { label: '1-2 min', min: 1, max: 2 },
+    { label: '2-5 min', min: 2, max: 5 },
+    { label: '5-10 min', min: 5, max: 10 },
+    { label: '10-20 min', min: 10, max: 20 },
+    { label: '20-60 min', min: 20, max: 60 },
+    { label: '> 60 min', min: 60, max: Infinity },
+  ]
+  const gapCounts = new Array(buckets.length).fill(0)
+  const soporteGapCounts = new Array(buckets.length).fill(0)
+  let gapSum = 0, gapN = 0, soporteGapSum = 0, soporteGapN = 0, cambiosSoporte = 0
+  const opAgg = new Map<string, { nombre: string; eventos: number; gapSum: number; gapN: number; cambioSop: number; bultos: number }>()
+  const serDia = new Map<string, { eventos: number; gapMin: number }>()
+
+  let prev: { operario: string; key: string; horaMin: number; soporte: string | null } | null = null
+  for (const r of ops) {
+    const opKey = r.operario
+    let o = opAgg.get(opKey)
+    if (!o) { o = { nombre: opKey, eventos: 0, gapSum: 0, gapN: 0, cambioSop: 0, bultos: 0 }; opAgg.set(opKey, o) }
+    o.eventos += 1
+    o.bultos += r.bultos ?? 0
+    const k = r.fecha.toISOString().slice(0, 10)
+    let s = serDia.get(k)
+    if (!s) { s = { eventos: 0, gapMin: 0 }; serDia.set(k, s) }
+    s.eventos += 1
+
+    if (prev && prev.operario === opKey && prev.key === k && r.horaMin != null && prev.horaMin != null) {
+      const gap = Math.max(0, r.horaMin - prev.horaMin)
+      if (gap > 720) {
+        // salto de jornada (>12 h): no es tiempo muerto, se ignora para las metricas
+        prev = { operario: opKey, key: k, horaMin: r.horaMin ?? -1, soporte: r.soporte }
+        continue
+      }
+      const bi = buckets.findIndex((b) => gap >= b.min && gap < b.max)
+      if (bi >= 0) gapCounts[bi]++
+      gapSum += gap; gapN++
+      s.gapMin += gap
+      o.gapSum += gap; o.gapN++
+      const cambioSop = prev.soporte != null && r.soporte != null && prev.soporte !== r.soporte
+      if (cambioSop) {
+        cambiosSoporte++
+        if (bi >= 0) soporteGapCounts[bi]++
+        soporteGapSum += gap; soporteGapN++
+        o.cambioSop++
+      }
+    }
+    prev = { operario: opKey, key: k, horaMin: r.horaMin ?? -1, soporte: r.soporte }
+  }
+
+  const serie = [...serDia.entries()].sort().map(([fecha, v]) => ({ fecha, eventos: v.eventos, gapPromedio: v.eventos > 1 ? +(v.gapMin / (v.eventos - 1)).toFixed(2) : null }))
+
+  return {
+    registros: count,
+    vacio: false as const,
+    operarios: opAgg.size,
+    gapPromedio: gapN ? +(gapSum / gapN).toFixed(2) : null,
+    gapMedianaEst: gapN ? +(gapSum / gapN).toFixed(2) : null,
+    cambiosSoporte,
+    gapPromedioCambioSoporte: soporteGapN ? +(soporteGapSum / soporteGapN).toFixed(2) : null,
+    distribucionGaps: buckets.map((b, i) => ({ bucket: b.label, cantidad: gapCounts[i] })),
+    distribucionGapsSoporte: buckets.map((b, i) => ({ bucket: b.label, cantidad: soporteGapCounts[i] })),
+    operariosTop: [...opAgg.values()].filter((o) => o.gapN > 30).map((o) => ({ operario: o.nombre, eventos: o.eventos, bultos: o.bultos, gapPromedio: +(o.gapSum / o.gapN).toFixed(2), cambiosSoporte: o.cambioSop })).sort((a, b) => b.eventos - a.eventos).slice(0, 15),
+    serie,
+  }
+}
+
+// ============ STATUS ============
+export async function getStatus() {
+  const [ola, h61, tm, pk, batches] = await Promise.all([
+    db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    db.tiempoMuerto.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    db.pickingEvento.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    db.uploadBatch.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
+  ])
+  return {
+    ola: { registros: ola._count, desde: ola._min.fecha, hasta: ola._max.fecha },
+    h61: { registros: h61._count, desde: h61._min.fecha, hasta: h61._max.fecha },
+    tm: { registros: tm._count, desde: tm._min.fecha, hasta: tm._max.fecha },
+    picking: { registros: pk._count, desde: pk._min.fecha, hasta: pk._max.fecha },
+    batches: batches.map((b) => ({ ...b, createdAt: b.createdAt.toISOString() })),
+  }
+}

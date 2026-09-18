@@ -1,0 +1,108 @@
+// Esquema Prisma - PostgreSQL para produccion (Vercel + Neon)
+// Este archivo reemplaza a schema.prisma al desplegar en Vercel
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Ola y pendiente diaria (bultos a preparar por dia)
+model OlaDia {
+  id        Int      @id @default(autoincrement())
+  fecha     DateTime @unique
+  ola       Float
+  pendiente Float
+  total     Float
+}
+
+// H61 pre-agregado: un registro por operario x dia
+model H61OpDia {
+  id           Int      @id @default(autoincrement())
+  fecha        DateTime
+  operario     String
+  nombre       String?
+  funcion      String
+  turno        String
+  horasActivas Int
+  bultos       Int
+  bultosBase   Int
+  bultosExtras Int
+  extras       Int
+  @@unique([fecha, operario])
+  @@index([fecha])
+}
+
+// H61 pre-agregado: produccion por turno x hora x dia
+model H61TurnoHora {
+  id        Int      @id @default(autoincrement())
+  fecha     DateTime
+  turno     String
+  hora      Int
+  bultos    Int
+  operarios Int
+  @@unique([fecha, turno, hora])
+  @@index([fecha])
+}
+
+// H61 pre-agregado: produccion por circuito x funcion x dia
+model H61Circuito {
+  id       Int      @id @default(autoincrement())
+  fecha    DateTime
+  circuito String
+  funcion  String
+  bultos   Int
+  @@unique([fecha, circuito, funcion])
+  @@index([fecha])
+}
+
+// Tiempos muertos normalizados
+model TiempoMuerto {
+  id          Int      @id @default(autoincrement())
+  fecha       DateTime
+  turno       String
+  operario    String
+  nombre      String?
+  motivoCode  Int?
+  categoria   String
+  detalle     String?
+  nave        String?
+  pasillo     String?
+  posicion    String?
+  minutos     Int
+  minutosAj   Int
+  minutosEf   Int
+  horaDesde   Int?
+  estado      String?
+  obs         String?
+  @@index([fecha])
+  @@index([categoria])
+}
+
+// Eventos de picking (archivo grande subido por script Python)
+model PickingEvento {
+  id       Int      @id @default(autoincrement())
+  batch    String
+  fecha    DateTime
+  operario String
+  horaMin  Int?
+  bultos   Int?
+  soporte  String?
+  circuito String?
+  raw      String?
+  @@index([fecha, operario])
+  @@index([batch])
+}
+
+// Trazabilidad de cargas
+model UploadBatch {
+  id        String   @id
+  tipo      String
+  filename  String?
+  rows      Int
+  meta      String?
+  createdAt DateTime @default(now())
+}
