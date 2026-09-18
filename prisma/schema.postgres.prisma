@@ -6,8 +6,10 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // POSTGRES_PRISMA_URL la provee la integracion Neon de Vercel (pooler, ideal para serverless)
+  url       = env("POSTGRES_PRISMA_URL")
+  directUrl = env("POSTGRES_URL_NON_POOLING")
 }
 
 // Ola y pendiente diaria (bultos a preparar por dia)
