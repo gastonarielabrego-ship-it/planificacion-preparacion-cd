@@ -13,4 +13,4 @@ else
   npx prisma generate
 fi
 
-npm run build
+npx next build
