@@ -1,37 +1,41 @@
 #!/usr/bin/env python3
 """
-subir_archivo.py — Carga archivos Excel/CSV grandes a la app de Planificación de Preparación CD.
+subir_archivo.py — Carga archivos Excel/CSV a la app de Planificación de Preparación CD.
 
-Diseñado para el archivo de PRODUCCIÓN POR PICKING que excede el límite del chat,
-pero también sirve para h61, ola y tiempos muertos.
+MODO 1 — CARPETA (recomendado): detecta automáticamente qué archivo es cada uno
+    python subir_archivo.py --carpeta "C:\\cargas" --url https://TU-APP.vercel.app --auto
+    python subir_archivo.py --carpeta . --solo-listar        (slo muestra qué detecta, no sube nada)
+
+    Reconoce por nombre de archivo (sin importar mayúsculas):
+        H61...                          -> h61      (producción por hora por operario)
+        ...picking / piking...          -> picking  (producción por picking, va por lotes)
+        ...muertos / muerto / TM...     -> tm       (tiempos muertos)
+        ...Ola / Pendiente...           -> ola      (matriz mensual; se transforma automáticamente)
+
+MODO 2 — ARCHIVO ÚNICO (control manual del tipo):
+    python subir_archivo.py --tipo picking --archivo "produccion picking.xlsx"
+    python subir_archivo.py --tipo h61 --archivo H61.xlsx --url https://TU-APP.vercel.app
 
 Requisitos:
     pip install pandas openpyxl requests
 
-Uso básico (picking, el archivo grande):
-    python subir_archivo.py --tipo picking --archivo "produccion picking.xlsx"
-    python subir_archivo.py --tipo picking --archivo picking.csv --url https://TU-APP.vercel.app
-
-También sirve para el H61 (26 MB, reemplaza los datos previos):
-    python subir_archivo.py --tipo h61 --archivo H61.xlsx
-
-Para 'picking' el envío es incremental por lotes (seguro para archivos enormes).
-Para 'h61' el envío es en un único lote con reemplazo (la app pre-agrega los datos).
-
-Columnas esperadas para PICKING (se auto-detectan; si difieren, ajustá MAPEO_PICKING):
-    fecha      -> columna con la fecha del evento (YYYYMMDD, DD/MM/YYYY, etc.)
-    operario   -> código del operario
-    horaMin    -> hora del evento (HH:MM, HHMM o minutos desde 00:00)
-    bultos     -> cantidad de bultos del evento (opcional)
-    soporte    -> identificador del soporte/pallet (opcional)
-    circuito   -> circuito/zona (opcional)
+Notas:
+    - 'picking' se envía incremental por lotes (seguro para archivos enormes).
+      El primer lote reemplaza el picking anterior.
+    - 'h61'/'ola'/'tm' se envían en un único lote con reemplazo completo.
+    - La matriz de "Ola y Pendiente" (33 hojas mensuales) se convierte a registros
+      diarios {fecha, ola, pendiente, total} automáticamente, igual que hace la web.
+    - Los archivos temporales de Excel (~$xxx.xlsx) se ignoran.
 """
 
 import argparse
 import json
+import os
+import re
 import sys
 import time
 import uuid
+from datetime import date, datetime
 
 import pandas as pd
 import requests
@@ -53,9 +57,28 @@ MAPEO_PICKING = {
 TAMANIO_LOTE = 5000  # filas por request
 
 
-def detectar_columnas(df: pd.DataFrame, tipo: str) -> dict:
-    """Auto-detecta el mapeo de columnas por coincidencia de nombres."""
-    cols = {c.strip().upper(): c for c in df.columns}
+# ---------------------------------------------------------------------------
+# Detección de tipo por nombre de archivo
+# ---------------------------------------------------------------------------
+def detectar_tipo(nombre_archivo: str):
+    """Devuelve 'h61'|'picking'|'tm'|'ola' según el nombre del archivo, o None."""
+    n = nombre_archivo.lower()
+    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
+        n = n.replace(a, b)
+    if "h61" in n:
+        return "h61"
+    if "picking" in n or "piking" in n or "pickeo" in n:
+        return "picking"
+    if "muerto" in n or re.search(r"\btm\b", n):
+        return "tm"
+    if "ola" in n or "pendiente" in n:
+        return "ola"
+    return None
+
+
+def detectar_columnas(df: pd.DataFrame) -> dict:
+    """Auto-detecta el mapeo de columnas de picking por coincidencia de nombres."""
+    cols = {str(c).strip().upper(): c for c in df.columns}
     deteccion = {}
 
     def buscar(candidatos):
@@ -65,95 +88,209 @@ def detectar_columnas(df: pd.DataFrame, tipo: str) -> dict:
                     return original
         return None
 
-    if tipo == "picking":
-        deteccion = {
-            "fecha": MAPEO_PICKING["fecha"] or buscar(["FECHA", "DIA", "DATE", "FEC"]),
-            "operario": MAPEO_PICKING["operario"] or buscar(["OPERARIO", "LEGAJO", "USUARIO", "USER", "OP "]),
-            "horaMin": MAPEO_PICKING["horaMin"] or buscar(["HORA", "TIME", "TS ", "TIMESTAMP"]),
-            "bultos": MAPEO_PICKING["bultos"] or buscar(["BULTO", "CANTIDAD", "UNIDAD", "CANT", "QTY"]),
-            "soporte": MAPEO_PICKING["soporte"] or buscar(["SOPORTE", "PALLET", "LPN", "SOP"]),
-            "circuito": MAPEO_PICKING["circuito"] or buscar(["CIRCUITO", "ZONA", "CIRCU"]),
-        }
+    deteccion = {
+        "fecha": MAPEO_PICKING["fecha"] or buscar(["FECHA", "DIA", "DATE", "FEC"]),
+        "operario": MAPEO_PICKING["operario"] or buscar(["OPERARIO", "LEGAJO", "USUARIO", "USER", "OP "]),
+        "horaMin": MAPEO_PICKING["horaMin"] or buscar(["HORA", "TIME", "TS ", "TIMESTAMP"]),
+        "bultos": MAPEO_PICKING["bultos"] or buscar(["BULTO", "CANTIDAD", "UNIDAD", "CANT", "QTY"]),
+        "soporte": MAPEO_PICKING["soporte"] or buscar(["SOPORTE", "PALLET", "LPN", "SOP"]),
+        "circuito": MAPEO_PICKING["circuito"] or buscar(["CIRCUITO", "ZONA", "CIRCU"]),
+    }
     return deteccion
 
 
-def leer_archivo(ruta: str) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# Lectura de archivos
+# ---------------------------------------------------------------------------
+def leer_generico(ruta: str, hoja=None) -> pd.DataFrame:
+    """Lee el archivo como texto (todo string, JSON-safe)."""
     if ruta.lower().endswith(".csv"):
         for sep in [",", ";", "\t"]:
             df = pd.read_csv(ruta, sep=sep, dtype=str, keep_default_na=False, nrows=5)
             if df.shape[1] >= 3:
                 return pd.read_csv(ruta, sep=sep, dtype=str, keep_default_na=False, low_memory=False)
         raise SystemExit("No se pudo determinar el separador del CSV.")
+    if hoja:
+        return pd.read_excel(ruta, sheet_name=hoja, dtype=str, keep_default_na=False)
     return pd.read_excel(ruta, dtype=str, keep_default_na=False)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Sube archivos de datos a la app de Planificación CD")
-    ap.add_argument("--tipo", required=True, choices=["picking", "h61", "ola", "tm"], help="tipo de carga")
-    ap.add_argument("--archivo", required=True, help="ruta del archivo .xlsx/.xls/.csv")
-    ap.add_argument("--url", default="http://localhost:3000", help="URL base de la app (default: http://localhost:3000)")
-    ap.add_argument("--hoja", default=None, help="nombre de la hoja (xlsx); default: todas")
-    ap.add_argument("--lote", type=int, default=TAMANIO_LOTE, help=f"filas por lote (default {TAMANIO_LOTE})")
-    args = ap.parse_args()
+def _fecha_de_celda(v):
+    """Convierte una celda de Excel en date, o None."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (pd.Timestamp, datetime)):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+    if isinstance(v, (int, float)):
+        # número serial de Excel (días desde 1899-12-30)
+        if 30000 < float(v) < 80000:
+            return (datetime(1899, 12, 30) + pd.Timedelta(days=float(v))).date()
+    return None
 
-    base = args.url.rstrip("/")
-    print(f"== Subida de {args.archivo} como '{args.tipo}' hacia {base} ==")
 
-    print("Leyendo archivo…")
-    df = leer_archivo(args.archivo)
-    if args.hoja and args.tipo != "picking":
-        df = pd.read_excel(args.archivo, sheet_name=args.hoja, dtype=str, keep_default_na=False)
-    df.columns = [str(c).strip() for c in df.columns]
-    print(f"  {len(df):,} filas x {len(df.columns)} columnas")
-    print(f"  Columnas encontradas: {list(df.columns)}")
+def _num_de(v):
+    """Convierte una celda en float, o None."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
-    rows = df.to_dict(orient="records")
 
-    if args.tipo == "picking":
-        mapping = detectar_columnas(df, "picking")
-        print(f"  Mapeo auto-detectado: {json.dumps(mapping, ensure_ascii=False)}")
-        faltan = [k for k in ("fecha", "operario", "horaMin") if not mapping.get(k)]
-        if faltan:
-            print(f"\n  AVISO: no se detectaron columnas para: {faltan}.")
-            print("  Editá MAPEO_PICKING al inicio de este script e indicá los nombres exactos.\n")
-            if input("¿Continuar de todas formas? (s/n): ").strip().lower() != "s":
-                sys.exit(1)
-    else:
+def preparar_ola(ruta: str):
+    """Convierte la matriz mensual de 'Ola y Pendiente' en registros diarios.
+
+    Replica la lógica de la web (src/lib/xlsx.ts): ubica la fila 'OLA TOTAL' /
+    'OLA', busca la fila de fechas reales hacia arriba (>=10 fechas) y emite
+    {fecha, ola, pendiente, total, hoja} por cada día.
+    """
+    hojas = pd.read_excel(ruta, sheet_name=None, header=None)
+    out = []
+    for nombre_hoja, df in hojas.items():
+        if df is None or df.empty or df.shape[1] < 2:
+            continue
+        col0 = df.iloc[:, 0].astype(str).str.strip().str.upper()
+
+        idx_ola = -1
+        for i in range(min(len(df), 12)):
+            if col0.iloc[i] in ("OLA TOTAL", "OLA"):
+                idx_ola = i
+                break
+        if idx_ola < 0:
+            continue
+
+        # fechas reales: primera fila hacia arriba con >=10 fechas (sin la col. de etiquetas)
+        fila_fechas = None
+        for i in range(idx_ola - 1, -1, -1):
+            fechas = [_fecha_de_celda(v) for v in df.iloc[i, 1:]]
+            if sum(1 for f in fechas if f) >= 10:
+                fila_fechas = fechas
+                break
+        if fila_fechas is None:
+            continue
+
+        # filas de conceptos (primera aparición de cada una)
+        ola_row = pend_row = tot_row = None
+        for i in range(len(df)):
+            et = col0.iloc[i]
+            if et in ("OLA TOTAL", "OLA") and ola_row is None:
+                ola_row = [_num_de(v) for v in df.iloc[i, 1:]]
+            elif et == "PENDIENTE" and pend_row is None:
+                pend_row = [_num_de(v) for v in df.iloc[i, 1:]]
+            elif et == "TOTAL" and tot_row is None:
+                tot_row = [_num_de(v) for v in df.iloc[i, 1:]]
+        if ola_row is None:
+            continue
+
+        for j, f in enumerate(fila_fechas):
+            if not f:
+                continue
+            o = ola_row[j] if j < len(ola_row) else None
+            p = pend_row[j] if pend_row and j < len(pend_row) else None
+            t = tot_row[j] if tot_row and j < len(tot_row) else None
+            o = o or 0
+            p = p or 0
+            t = t if t is not None else (o + p)
+            out.append({"fecha": f.isoformat(), "ola": o, "pendiente": p, "total": t, "hoja": str(nombre_hoja)})
+    return out
+
+
+def pedir_confirmacion(texto: str, auto: bool) -> bool:
+    if auto:
+        return True
+    try:
+        return input(texto).strip().lower() != "n"
+    except EOFError:
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Carga de un archivo
+# ---------------------------------------------------------------------------
+def cargar(tipo: str, ruta: str, base: str, lote: int, auto: bool) -> bool:
+    print(f"\n== {os.path.basename(ruta)} -> tipo '{tipo}' hacia {base} ==")
+    if not os.path.exists(ruta):
+        print("   [ERROR] no existe el archivo")
+        return False
+
+    if tipo == "ola" and not ruta.lower().endswith(".csv"):
+        print("   Convirtiendo matriz mensual a registros diarios…")
+        rows = preparar_ola(ruta)
+        if not rows:
+            print("   [ERROR] no se pudo leer la matriz (¿falta la fila 'Ola total'?)")
+            return False
         mapping = None
+    else:
+        print("   Leyendo archivo…")
+        df = leer_generico(ruta)
+        df.columns = [str(c).strip() for c in df.columns]
+        print(f"   {len(df):,} filas x {len(df.columns)} columnas")
+        if tipo == "picking":
+            mapping = detectar_columnas(df)
+            print(f"   Mapeo auto-detectado: {json.dumps(mapping, ensure_ascii=False)}")
+            faltan = [k for k in ("fecha", "operario", "horaMin") if not mapping.get(k)]
+            if faltan:
+                print(f"\n   AVISO: no se detectaron columnas para: {faltan}.")
+                print("   Editá MAPEO_PICKING al inicio de este script con los nombres exactos.\n")
+                if not pedir_confirmacion("   ¿Continuar de todas formas? (s/n): ", auto):
+                    return False
+        else:
+            mapping = None
+        rows = df.to_dict(orient="records")
+
+    if not rows:
+        print("   [ERROR] el archivo no tiene filas utilizables")
+        return False
 
     batch_id = f"py-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     url = f"{base}/api/batch"
     headers = {"Content-Type": "application/json"}
-    reemplazar = args.tipo != "picking"  # h61/ola/tm: un solo lote con reemplazo
-
-    if reemplazar and len(rows) > 200_000:
-        print(f"\n  El tipo '{args.tipo}' se envía en un único lote ({len(rows):,} filas).")
-        print("  Puede tardar unos minutos y usar bastante memoria.\n")
+    reemplazar_unico = tipo != "picking"  # h61/ola/tm: un solo lote con reemplazo
 
     total_ok = 0
     total_err = 0
-    if reemplazar:
-        body = {"tipo": args.tipo, "rows": rows, "filename": args.archivo, "batchId": batch_id, "reemplazar": True, "mapping": mapping}
+
+    if reemplazar_unico:
+        print(f"   Enviando {len(rows):,} filas en un único lote (reemplaza los datos previos)…")
+        body = {"tipo": tipo, "rows": rows, "filename": os.path.basename(ruta),
+                "batchId": batch_id, "reemplazar": True, "mapping": mapping}
         r = requests.post(url, json=body, headers=headers, timeout=1800)
         if r.status_code != 200:
-            print(f"ERROR {r.status_code}: {r.text[:500]}")
-            sys.exit(1)
+            print(f"   [ERROR] HTTP {r.status_code}: {r.text[:300]}")
+            return False
         j = r.json()
         total_ok, total_err = j["insertados"], j["errores"]
-        print(f"  Insertadas: {total_ok:,} | Descartadas: {total_err:,}")
     else:
-        for i in range(0, len(rows), args.lote):
-            lote = rows[i : i + args.lote]
-            es_final = (i + args.lote) >= len(rows)
-            body = {
-                "tipo": "picking",
-                "rows": lote,
-                "filename": args.archivo,
-                "batchId": batch_id,
-                "mapping": mapping,
-                "final": es_final,
-                "reemplazar": i == 0,  # primer lote limpia picking anterior
-            }
+        for i in range(0, len(rows), lote):
+            lote_rows = rows[i:i + lote]
+            es_final = (i + lote) >= len(rows)
+            body = {"tipo": "picking", "rows": lote_rows, "filename": os.path.basename(ruta),
+                    "batchId": batch_id, "mapping": mapping, "final": es_final,
+                    "reemplazar": i == 0}
             ok = False
             for intento in range(3):
                 try:
@@ -164,20 +301,100 @@ def main():
                         total_err += j["errores"]
                         ok = True
                         break
-                    print(f"  lote {i//args.lote+1}: HTTP {r.status_code} -> reintento")
+                    print(f"   lote {i // lote + 1}: HTTP {r.status_code} -> reintento")
                 except requests.RequestException as e:
-                    print(f"  lote {i//args.lote+1}: {e} -> reintento")
+                    print(f"   lote {i // lote + 1}: {e} -> reintento")
                 time.sleep(2)
             if not ok:
-                print(f"  lote {i//args.lote+1}: FALLIDO tras 3 intentos")
-                total_err += len(lote)
-            print(f"  progreso: {min(i+args.lote, len(rows)):,}/{len(rows):,} filas", end="\r")
+                print(f"   lote {i // lote + 1}: FALLIDO tras 3 intentos")
+                total_err += len(lote_rows)
+            print(f"   progreso: {min(i + lote, len(rows)):,}/{len(rows):,} filas", end="\r")
 
     print()
-    print(f"== Listo ==  Insertadas: {total_ok:,} | Descartadas: {total_err:,}")
+    print(f"   [OK] Insertadas: {total_ok:,} | Descartadas: {total_err:,}")
     if total_err:
-        print("   Las filas descartadas no tenían fecha u operario legible.")
-    print(f"   Refrescá la app para ver el módulo actualizado. (batch: {batch_id})")
+        print("   (las descartadas no tenían fecha u operario legible)")
+    return total_err == 0
+
+
+# ---------------------------------------------------------------------------
+# Modo carpeta
+# ---------------------------------------------------------------------------
+def modo_carpeta(carpeta: str, args) -> int:
+    if not os.path.isdir(carpeta):
+        print(f"[ERROR] la carpeta no existe: {carpeta}")
+        return 1
+
+    archivos = sorted(
+        f for f in os.listdir(carpeta)
+        if f.lower().endswith((".xlsx", ".xls", ".csv")) and not f.startswith("~$")
+    )
+    if not archivos:
+        print(f"[ERROR] no hay archivos .xlsx/.xls/.csv en: {os.path.abspath(carpeta)}")
+        return 1
+
+    print(f"== Carpeta: {os.path.abspath(carpeta)} ==")
+    plan = []
+    for f in archivos:
+        tipo = detectar_tipo(f)
+        estado = tipo if tipo else "DESCONOCIDO (se ignora)"
+        print(f"   {f}  ->  {estado}")
+        if tipo:
+            plan.append((tipo, os.path.join(carpeta, f)))
+
+    if not plan:
+        print("\n[ERROR] ningun archivo fue reconocido.")
+        print("  Renombra los archivos incluyendo: h61 / picking / muertos / ola")
+        return 1
+
+    if args.solo_listar:
+        print("\n(--solo-listar: no se subio nada)")
+        return 0
+
+    print(f"\nSe van a cargar {len(plan)} archivo(s). Los datos previos de cada tipo se reemplazan.")
+    if not pedir_confirmacion("¿Continuar? (s/n): ", args.auto):
+        print("Cancelado.")
+        return 0
+
+    fallos = 0
+    for tipo, ruta in plan:
+        if not cargar(tipo, ruta, args.url.rstrip("/"), args.lote, args.auto):
+            fallos += 1
+
+    print("\n== RESUMEN ==")
+    for tipo, ruta in plan:
+        pass
+    if fallos:
+        print(f"  [ATENCION] {fallos} archivo(s) con problemas. Revisar mensajes de arriba.")
+        return 1
+    print("  Todo cargado. Refrescá la app para ver los datos actualizados.")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Sube archivos de datos a la app de Planificación CD")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--carpeta", help="carpeta con los archivos (detecta el tipo de cada uno)")
+    src.add_argument("--archivo", help="ruta de un único archivo .xlsx/.xls/.csv")
+    ap.add_argument("--tipo", choices=["picking", "h61", "ola", "tm"], help="tipo de carga (solo con --archivo)")
+    ap.add_argument("--url", default="http://localhost:3000", help="URL base de la app (default: http://localhost:3000)")
+    ap.add_argument("--hoja", default=None, help="nombre de la hoja (xlsx); default: todas/primera")
+    ap.add_argument("--lote", type=int, default=TAMANIO_LOTE, help=f"filas por lote en picking (default {TAMANIO_LOTE})")
+    ap.add_argument("--auto", action="store_true", help="no pedir confirmaciones (ideal para el .bat)")
+    ap.add_argument("--solo-listar", action="store_true", help="modo carpeta: solo muestra qué detecta, no sube")
+    args = ap.parse_args()
+
+    if args.carpeta:
+        sys.exit(modo_carpeta(args.carpeta, args))
+
+    # modo archivo único
+    if not args.tipo:
+        args.tipo = detectar_tipo(args.archivo)
+        if args.tipo:
+            print(f"Tipo auto-detectado por nombre: {args.tipo}")
+        else:
+            ap.error("--tipo es obligatorio si el nombre del archivo no permite detectarlo")
+    sys.exit(0 if cargar(args.tipo, args.archivo, args.url.rstrip("/"), args.lote, args.auto) else 1)
 
 
 if __name__ == "__main__":
