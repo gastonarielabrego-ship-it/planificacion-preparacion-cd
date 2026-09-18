@@ -114,10 +114,10 @@ function mapPicking(r: Record<string, unknown>, mapping: PickingMapping | null) 
   let horaMin: number | null = null
   const hmRaw = src('horaMin')
   if (hmRaw != null && hmRaw !== '') {
-    // 1) formato "HH:MM" o "HH:MM:SS" (string) — antes del parseo numerico
-    const hm = String(hmRaw).trim().match(/^(\d{1,2}):(\d{2})/)
+    // 1) formato "HH:MM" u "HH:MM:SS" (string) — conserva segundos como fraccion de minuto
+    const hm = String(hmRaw).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{1,2}))?/)
     if (hm) {
-      horaMin = parseInt(hm[1], 10) * 60 + parseInt(hm[2], 10)
+      horaMin = parseInt(hm[1], 10) * 60 + parseInt(hm[2], 10) + (hm[3] ? parseInt(hm[3], 10) / 60 : 0)
     } else {
       const n = num(hmRaw)
       if (n != null) {

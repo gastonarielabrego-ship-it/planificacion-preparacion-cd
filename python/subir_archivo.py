@@ -43,15 +43,22 @@ import requests
 # ---------------------------------------------------------------------------
 # MAPEO PICKING: clave = campo canónico de la app, valor = nombre de la columna
 # en tu archivo. Si el valor es None, el script intenta auto-detectar.
-# AJUSTÁ ESTE DICCIONARIO si tu archivo usa otros nombres de columna.
+#
+# ESTRUCTURA CONFIRMADA DEL ARCHIVO DE PICKING (jul 2026):
+#   CODUTI=codigo operario | NOMUTI=nombre | FECHA=fecha | HORA=hh:mm:ss
+#   CODACT=actividad/circuito | ZONSTS,ALLSTS,DPLSTS,NIVSTS=ubicacion
+#   CODPRO=producto (EAN) | PCBPRO=piezas por bulto | BULTOS=cantidad
+#   MINUTOS=duracion operacion | ALERTA=flag
+#   -> No hay columna de soporte/pallet en el export; si se agrega (LPN/PALLET)
+#      se activan las metricas de "tiempo entre soportes" automaticamente.
 # ---------------------------------------------------------------------------
 MAPEO_PICKING = {
-    "fecha": None,      # ej: "FECHA", "Fecha Picking", "DIA"
-    "operario": None,   # ej: "OPERARIO", "Legajo", "USER"
-    "horaMin": None,    # ej: "HORA", "HORA_MIN", "TIMESTAMP"
-    "bultos": None,     # ej: "BULTOS", "CANTIDAD", "UNIDADES"
-    "soporte": None,    # ej: "SOPORTE", "PALLET", "LPN"
-    "circuito": None,   # ej: "CIRCUITO", "ZONA"
+    "fecha": "FECHA",
+    "operario": "CODUTI",
+    "horaMin": "HORA",
+    "bultos": "BULTOS",
+    "soporte": None,    # el export no trae soporte/pallet; completar si se agrega
+    "circuito": "CODACT",
 }
 
 TAMANIO_LOTE = 5000  # filas por request
@@ -90,11 +97,11 @@ def detectar_columnas(df: pd.DataFrame) -> dict:
 
     deteccion = {
         "fecha": MAPEO_PICKING["fecha"] or buscar(["FECHA", "DIA", "DATE", "FEC"]),
-        "operario": MAPEO_PICKING["operario"] or buscar(["OPERARIO", "LEGAJO", "USUARIO", "USER", "OP "]),
+        "operario": MAPEO_PICKING["operario"] or buscar(["CODUTI", "OPERARIO", "LEGAJO", "USUARIO", "USER", "OP "]),
         "horaMin": MAPEO_PICKING["horaMin"] or buscar(["HORA", "TIME", "TS ", "TIMESTAMP"]),
         "bultos": MAPEO_PICKING["bultos"] or buscar(["BULTO", "CANTIDAD", "UNIDAD", "CANT", "QTY"]),
         "soporte": MAPEO_PICKING["soporte"] or buscar(["SOPORTE", "PALLET", "LPN", "SOP"]),
-        "circuito": MAPEO_PICKING["circuito"] or buscar(["CIRCUITO", "ZONA", "CIRCU"]),
+        "circuito": MAPEO_PICKING["circuito"] or buscar(["CODACT", "CIRCUITO", "ZONA", "CIRCU"]),
     }
     return deteccion
 
@@ -252,6 +259,10 @@ def cargar(tipo: str, ruta: str, base: str, lote: int, auto: bool) -> bool:
         if tipo == "picking":
             mapping = detectar_columnas(df)
             print(f"   Mapeo auto-detectado: {json.dumps(mapping, ensure_ascii=False)}")
+            if not mapping.get("soporte"):
+                print("   [aviso] el archivo no trae columna de soporte/pallet:")
+                print("           los gaps entre pickings se calculan igual, pero las")
+                print("           metricas 'tiempo entre soportes' quedaran vacias.")
             faltan = [k for k in ("fecha", "operario", "horaMin") if not mapping.get(k)]
             if faltan:
                 print(f"\n   AVISO: no se detectaron columnas para: {faltan}.")

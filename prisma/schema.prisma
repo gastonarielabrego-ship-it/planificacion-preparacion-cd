@@ -88,7 +88,7 @@ model PickingEvento {
   batch    String
   fecha    DateTime
   operario String
-  horaMin  Int?
+  horaMin  Float?
   bultos   Int?
   soporte  String?
   circuito String?
