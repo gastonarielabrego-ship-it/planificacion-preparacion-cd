@@ -48,6 +48,19 @@ model H61TurnoHora {
   @@index([fecha])
 }
 
+// H61: bultos por operario x hora (permite distinguir jornada vs horas extra)
+model H61OpHora {
+  id       Int     @id @default(autoincrement())
+  fecha    DateTime
+  operario String
+  turno    String
+  hora     Int
+  bultos   Int
+  esExtra  Boolean
+  @@unique([fecha, operario, hora])
+  @@index([fecha])
+}
+
 // H61 pre-agregado: produccion por circuito x funcion x dia
 model H61Circuito {
   id       Int      @id @default(autoincrement())

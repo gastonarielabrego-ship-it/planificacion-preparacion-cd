@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getResumen, getPlanificacion, getH61, getTM, getPicking, getProdCirc, getOla } from '@/lib/agg'
+import { getResumen, getPlanificacion, getH61, getTM, getPicking, getProdCirc, getOla, getCapacidad } from '@/lib/agg'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -21,6 +21,7 @@ export async function GET(req: NextRequest) {
       case 'planificacion': data = await getPlanificacion(filtros); break
       case 'ola': data = await getOla(filtros); break
       case 'h61': data = await getH61(filtros); break
+      case 'capacidad': data = await getCapacidad(filtros); break
       case 'tm': data = await getTM(filtros); break
       case 'picking': data = await getPicking(filtros); break
       case 'prodcirc': data = await getProdCirc(filtros); break

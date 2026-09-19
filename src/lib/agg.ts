@@ -314,6 +314,158 @@ export async function getH61(f: Filtros) {
   }
 }
 
+// ============ CAPACIDAD H61 (ritmo de preparacion: jornada vs extras) ============
+// Regla: las primeras 8 horas con produccion de cada operario-dia cuentan como
+// jornada base; el excedente de horas y sus bultos cuentan como horas extra.
+function mediana(vals: number[]): number {
+  if (!vals.length) return 0
+  const s = [...vals].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+export async function getCapacidad(f: Filtros) {
+  const [ops, oh] = await Promise.all([
+    db.h61OpDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } }),
+    db.h61OpHora.findMany({ where: { fecha: rango(f) } }),
+  ])
+  if (!ops.length) return { serie: [], porMes: [], perfilHora: [], resumen: null, tieneOpHora: oh.length > 0 }
+
+  // --- serie diaria ---
+  const porDia = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; ops: Set<string>; opsExtras: Set<string>; opDias: number }>()
+  for (const r of ops) {
+    const k = dia(r.fecha)
+    let p = porDia.get(k)
+    if (!p) { p = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, ops: new Set(), opsExtras: new Set(), opDias: 0 }; porDia.set(k, p) }
+    p.bultos += r.bultos
+    p.bultosBase += r.bultosBase
+    p.bultosExtras += r.bultosExtras
+    p.horas += r.horasActivas
+    p.horasExtras += r.extras
+    p.ops.add(r.operario)
+    if (r.extras > 0) p.opsExtras.add(r.operario)
+    p.opDias += 1
+  }
+
+  const serie = [...porDia.entries()].sort().map(([fecha, p]) => ({
+    fecha,
+    bultos: p.bultos,
+    bultosBase: p.bultosBase,
+    bultosExtras: p.bultosExtras,
+    pctExtras: p.bultos ? +((p.bultosExtras / p.bultos) * 100).toFixed(1) : 0,
+    horas: p.horas,
+    horasExtras: p.horasExtras,
+    ritmo: p.horas ? +(p.bultos / p.horas).toFixed(1) : null,
+    ops: p.ops.size,
+    opsExtras: p.opsExtras.size,
+    opDias: p.opDias,
+  }))
+
+  // --- agregados por mes ---
+  const mesAgg = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; opDias: number; ops: Set<string>; opsExtras: Set<string>; ritmos: number[]; dias: number }>()
+  for (const s of serie) {
+    const k = s.fecha.slice(0, 7)
+    let m = mesAgg.get(k)
+    if (!m) { m = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, opDias: 0, ops: new Set(), opsExtras: new Set(), ritmos: [], dias: 0 }; mesAgg.set(k, m) }
+    m.dias += 1
+    m.bultos += s.bultos
+    m.bultosBase += s.bultosBase
+    m.bultosExtras += s.bultosExtras
+    m.horas += s.horas
+    m.horasExtras += s.horasExtras
+    m.opDias += s.opDias
+    m.ritmos.push(s.ritmo ?? 0)
+  }
+  // personas distintas por mes (necesita operarios por dia)
+  const opsPorDia = new Map<string, { ops: Set<string>; opsExtras: Set<string> }>()
+  for (const r of ops) {
+    const k = dia(r.fecha)
+    let p = opsPorDia.get(k)
+    if (!p) { p = { ops: new Set(), opsExtras: new Set() }; opsPorDia.set(k, p) }
+    p.ops.add(r.operario)
+    if (r.extras > 0) p.opsExtras.add(r.operario)
+  }
+  for (const s of serie) {
+    const m = mesAgg.get(s.fecha.slice(0, 7))
+    const p = opsPorDia.get(s.fecha)
+    if (!m || !p) continue
+    for (const op of p.ops) m.ops.add(op)
+    for (const op of p.opsExtras) m.opsExtras.add(op)
+  }
+  const porMes = [...mesAgg.entries()].sort().map(([mes, m]) => ({
+    mes,
+    dias: m.dias,
+    actividades: m.opDias,
+    personas: m.ops.size,
+    personasExtras: m.opsExtras.size,
+    bultos: m.bultos,
+    bultosBase: m.bultosBase,
+    bultosExtras: m.bultosExtras,
+    pctExtras: m.bultos ? +((m.bultosExtras / m.bultos) * 100).toFixed(1) : 0,
+    horas: m.horas,
+    horasExtras: m.horasExtras,
+    ritmoProm: m.horas ? +(m.bultos / m.horas).toFixed(1) : null,
+    ritmoMediana: m.ritmos.length ? +mediana(m.ritmos).toFixed(1) : null,
+  }))
+
+  // --- perfil por hora: colaboradores en jornada vs extras (promedio por dia) ---
+  type HoraAgg = { fechas: Set<string>; jornada: Map<string, Set<string>>; extras: Map<string, Set<string>>; bultos: Map<string, number> }
+  const horasAgg: HoraAgg[] = Array.from({ length: 24 }, () => ({ fechas: new Set<string>(), jornada: new Map(), extras: new Map(), bultos: new Map() }))
+  for (const r of oh) {
+    const h = horasAgg[r.hora]
+    if (!h) continue
+    const k = dia(r.fecha)
+    h.fechas.add(k)
+    const destino = r.esExtra ? h.extras : h.jornada
+    let set = destino.get(k)
+    if (!set) { set = new Set(); destino.set(k, set) }
+    set.add(r.operario)
+    h.bultos.set(k, (h.bultos.get(k) ?? 0) + r.bultos)
+  }
+  const perfilHora = horasAgg.map((h, hora) => {
+    const n = h.fechas.size
+    const sumaJornada = [...h.jornada.values()].reduce((a, s) => a + s.size, 0)
+    const sumaExtras = [...h.extras.values()].reduce((a, s) => a + s.size, 0)
+    const sumaBultos = [...h.bultos.values()].reduce((a, b) => a + b, 0)
+    return {
+      hora,
+      etiqueta: `${String(hora).padStart(2, '0')}:00`,
+      opsJornada: n ? +(sumaJornada / n).toFixed(1) : 0,
+      opsExtras: n ? +(sumaExtras / n).toFixed(1) : 0,
+      bultosProm: n ? Math.round(sumaBultos / n) : 0,
+    }
+  })
+
+  // --- resumen del periodo filtrado ---
+  const bultos = serie.reduce((a, s) => a + s.bultos, 0)
+  const bultosBase = serie.reduce((a, s) => a + s.bultosBase, 0)
+  const bultosExtras = serie.reduce((a, s) => a + s.bultosExtras, 0)
+  const horas = serie.reduce((a, s) => a + s.horas, 0)
+  const horasExtras = serie.reduce((a, s) => a + s.horasExtras, 0)
+  const personas = new Set<string>()
+  const personasExtras = new Set<string>()
+  for (const p of opsPorDia.values()) {
+    for (const op of p.ops) personas.add(op)
+    for (const op of p.opsExtras) personasExtras.add(op)
+  }
+  const resumen = {
+    dias: serie.length,
+    actividades: serie.reduce((a, s) => a + s.opDias, 0),
+    personas: personas.size,
+    personasExtras: personasExtras.size,
+    bultos,
+    bultosBase,
+    bultosExtras,
+    pctExtras: bultos ? +((bultosExtras / bultos) * 100).toFixed(1) : 0,
+    horas,
+    horasExtras,
+    ritmoProm: horas ? +(bultos / horas).toFixed(1) : null,
+    ritmoMediana: +mediana(serie.map((s) => s.ritmo ?? 0)).toFixed(1),
+  }
+
+  return { serie, porMes, perfilHora, resumen, tieneOpHora: oh.length > 0 }
+}
+
 // ============ TIEMPOS MUERTOS ============
 export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
   const where: Record<string, unknown> = { fecha: rango(f) }

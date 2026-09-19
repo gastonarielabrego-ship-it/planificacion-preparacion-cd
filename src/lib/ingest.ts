@@ -168,6 +168,7 @@ async function clearTipo(tipo: TipoCarga) {
   else if (tipo === 'h61') {
     await db.h61OpDia.deleteMany({})
     await db.h61TurnoHora.deleteMany({})
+    await db.h61OpHora.deleteMany({})
     await db.h61Circuito.deleteMany({})
   } else if (tipo === 'tm') await db.tiempoMuerto.deleteMany({})
   else if (tipo === 'picking') await db.pickingEvento.deleteMany({})
@@ -190,6 +191,19 @@ async function ingestOla(records: Record<string, unknown>[]) {
 }
 
 // Ingesta de H61 (filas crudas por operario-circuito-actividad): pre-agrega
+
+// Ordena las horas activas de un operario-dia en orden cronologico del turno.
+// Si las horas cruzan la medianoche (turno noche: >=18 y <=5), el dia arranca
+// por la tarde/noche y continua en la madrugada: [19..23, 0..5].
+function ordenarHorasActivas(horas: boolean[]): number[] {
+  const activas: number[] = []
+  horas.forEach((v, i) => { if (v) activas.push(i) }) // ya quedan ascendentes
+  if (!activas.length) return activas
+  const cruzaMedianoche = activas[0] <= 5 && activas[activas.length - 1] >= 18
+  if (!cruzaMedianoche) return activas
+  return [...activas.filter((h) => h >= 18), ...activas.filter((h) => h <= 5)]
+}
+
 async function ingestH61(records: Record<string, unknown>[]) {
   // acumuladores
   const op = new Map<string, { fecha: Date; operario: string; nombre: string | null; funcion: string; turno: string; horas: boolean[]; bultosHora: number[]; bultos: number }>()
@@ -248,10 +262,9 @@ async function ingestH61(records: Record<string, unknown>[]) {
   const ops = [...op.values()].map((o) => {
     const horasActivas = o.horas.filter(Boolean).length
     const extras = Math.max(0, horasActivas - 8)
-    // bultos en extras: los de las ultimas horas activas del turno
-    const idxActivas: number[] = []
-    o.horas.forEach((v, i) => { if (v) idxActivas.push(i) })
-    const extrasIdx = idxActivas.slice(Math.max(0, horasActivas - extras))
+    // bultos en extras: los de las ultimas horas activas del turno (orden cronologico)
+    const idxActivas = ordenarHorasActivas(o.horas)
+    const extrasIdx = idxActivas.slice(Math.max(0, idxActivas.length - extras))
     const bultosExtras = extrasIdx.reduce((a, i) => a + Math.max(0, o!.bultosHora[i]), 0)
     return {
       fecha: o.fecha,
@@ -266,12 +279,23 @@ async function ingestH61(records: Record<string, unknown>[]) {
       extras,
     }
   })
+  // detalle operario x hora: primeras 8 horas activas = jornada, resto = extras
+  const opHoraRows: { fecha: Date; operario: string; turno: string; hora: number; bultos: number; esExtra: boolean }[] = []
+  for (const o of op.values()) {
+    const orden = ordenarHorasActivas(o.horas)
+    const extrasCount = Math.max(0, orden.length - 8)
+    const extrasSet = new Set(orden.slice(orden.length - extrasCount))
+    for (const h of orden) {
+      opHoraRows.push({ fecha: o.fecha, operario: o.operario, turno: o.turno, hora: h, bultos: Math.max(0, o.bultosHora[h]), esExtra: extrasSet.has(h) })
+    }
+  }
   const thRows = [...th.values()].map((t) => ({ fecha: t.fecha, turno: t.turno, hora: t.hora, bultos: t.bultos, operarios: t.ops.size }))
   const ciRows = [...ci.values()]
 
   await clearTipo('h61')
   for (const c of chunk(ops, 400)) await db.h61OpDia.createMany({ data: c })
   for (const c of chunk(thRows, 400)) await db.h61TurnoHora.createMany({ data: c })
+  for (const c of chunk(opHoraRows, 400)) await db.h61OpHora.createMany({ data: c })
   for (const c of chunk(ciRows, 400)) await db.h61Circuito.createMany({ data: c })
 
   return { insertados: ops.length, errores, rows: ops }
