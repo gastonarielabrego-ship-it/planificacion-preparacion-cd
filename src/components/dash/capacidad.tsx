@@ -6,10 +6,10 @@
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Gauge, Hourglass, Layers, Users, CalendarOff, TrendingUp, TrendingDown } from 'lucide-react'
+import { Gauge, Hourglass, Layers, Users, CalendarOff } from 'lucide-react'
 import { Kpi, SinDatos } from './kpi'
 import { fetchDatos, n, n1, pct, fechaCorta, COLORES } from '@/lib/client'
-import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { ComposedChart, BarChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, Cell } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -70,6 +70,11 @@ interface CapacidadData {
     diasNormalesPerfil: number
     diasFeriadoPerfil: number
   } | null
+  porDiaSemana: { dow: number; dia: string; dias: number; bultosProm: number; personasProm: number; horasProm: number; ritmo: number | null; ritmoMediana: number | null; pctExtras: number }[]
+  sabados: { fecha: string; bultos: number; bultosNormales: number; personas: number; personasExtras: number; opDias: number; horas: number; ritmo: number | null; pctExtras: number; bultosFeriado: number; feriadoManana: string | null; esFeriado: boolean; dotacionAcotada: boolean }[]
+  sabadosResumen: { total: number; personasMediana: number; acotadas: number; personasAcotadasProm: number | null; personasRestoProm: number | null; ritmo: number | null } | null
+  porActividad: { actividad: string; bultos: number; dias: number; bultosPorDia: number; opDias: number; horas: number; ritmo: number | null; pct: number }[]
+  tieneActividad: boolean
 }
 
 // Caja de comparación: valor de un día normal contra el de una jornada feriada
@@ -107,6 +112,12 @@ function CajaComparativa({ titulo, normal, feriado, delta, unidad, decimales }: 
 const MESES_ABR = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 const etiquetaMes = (ym: string) => `${MESES_ABR[parseInt(ym.slice(5, 7), 10) - 1]} ${ym.slice(0, 4)}`
 
+// Etiqueta legible del código de actividad: 2 -> "Actividad 2", JAULA -> "Jaula"
+const etiquetaActividad = (a: string) => {
+  if (/^\d+$/.test(a)) return `Actividad ${a}`
+  return a.charAt(0) + a.slice(1).toLowerCase()
+}
+
 export function CapacidadTab() {
   const { data, isLoading } = useQuery({ queryKey: ['capacidad'], queryFn: () => fetchDatos<CapacidadData>('capacidad') })
   const meses = useMemo(() => (data?.porMes ?? []).map((m) => m.mes), [data])
@@ -116,20 +127,10 @@ export function CapacidadTab() {
   const filas = useMemo(() => (mes === 'todos' ? data?.porMes ?? [] : (data?.porMes ?? []).filter((m) => m.mes === mes)), [data, mes])
   const feriadosConActividad = useMemo(() => (mes === 'todos' ? data?.feriados ?? [] : (data?.feriados ?? []).filter((f) => f.fecha.startsWith(mes))), [data, mes])
   const comp = data?.comparativa ?? null
-
-  // Ranking de días (respeta el filtro de mes): vs promedio de un día normal del período
-  const ranking = useMemo(() => {
-    const base = (data?.serie ?? [])
-      .filter((s) => s.bultos > 0 && (mes === 'todos' || s.fecha.startsWith(mes)))
-      .map((s) => ({
-        ...s,
-        vsProm: comp && comp.normal.bultosPorDia > 0 ? Math.round(((s.bultos - comp.normal.bultosPorDia) / comp.normal.bultosPorDia) * 100) : null,
-      }))
-    const top = [...base].sort((a, b) => b.bultos - a.bultos).slice(0, 8)
-    const bottom = [...base].sort((a, b) => a.bultos - b.bultos).slice(0, 8)
-    return { top, bottom }
-  }, [data, mes, comp])
   const perfilComp = useMemo(() => (comp?.perfilHora ?? []).filter((p) => p.bultosNormal > 0 || p.bultosFeriado > 0 || p.personasNormal > 0 || p.personasFeriado > 0), [comp])
+  const diasSemana = useMemo(() => (data?.porDiaSemana ?? []).filter((d) => d.dow >= 1 && d.dow <= 5), [data])
+  const sab = data?.sabados ?? []
+  const sabResumen = data?.sabadosResumen ?? null
 
   // Perfil por hora: promedio de colaboradores por hora (jornada vs extras) + bultos promedio
   const perfil = useMemo(() => (data?.perfilHora ?? []).filter((p) => p.opsJornada > 0 || p.opsExtras > 0), [data])
@@ -227,6 +228,177 @@ export function CapacidadTab() {
               <Line yAxisId="p" dataKey="pctExtrasTotal" name="% en extras (incl. feriados)" stroke={COLORES[3]} strokeWidth={2} dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Ritmo de preparación por día: lunes a viernes */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Ritmo de preparación por día: lunes a viernes</CardTitle>
+          <CardDescription>
+            Medición normal de cada día de la semana (excluye jornadas feriadas y noches TN previas). Las barras marcan los bultos promedio de un día típico y la línea el ritmo (bultos por hora-hombre); la mediana refleja el día típico sin distorsión de picos. Los sábados se analizan aparte en la tarjeta siguiente
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={diasSemana} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="dia" tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="b" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+              <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} />
+              <Tooltip />
+              <Legend />
+              <Bar yAxisId="b" dataKey="bultosProm" name="Bultos promedio del día" fill={COLORES[0]} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="r" dataKey="ritmo" name="Ritmo (bultos/h)" stroke={COLORES[3]} strokeWidth={2} />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Día</TableHead>
+                <TableHead className="text-right">Días</TableHead>
+                <TableHead className="text-right">Bultos prom.</TableHead>
+                <TableHead className="text-right">Personas prom.</TableHead>
+                <TableHead className="text-right">Horas-hombre</TableHead>
+                <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+                <TableHead className="text-right">Mediana días</TableHead>
+                <TableHead className="text-right">% extras</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(data.porDiaSemana ?? []).map((d) => (
+                <TableRow key={d.dow} className={d.dow === 6 ? 'bg-sky-50/60' : undefined}>
+                  <TableCell className="font-medium">
+                    {d.dia}
+                    {d.dow === 6 && <Badge variant="outline" className="ml-2 border-sky-200 bg-sky-50 text-sky-700">análisis aparte</Badge>}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{d.dias}</TableCell>
+                  <TableCell className="text-right tabular-nums">{n(d.bultosProm)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{n1(d.personasProm)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{n(d.horasProm)} h</TableCell>
+                  <TableCell className="text-right tabular-nums font-semibold">{n1(d.ritmo)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{n1(d.ritmoMediana)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{pct(d.pctExtras)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* Sábados: dotación y ritmo */}
+      {sab.length > 0 && sabResumen && (
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-base">Sábados: dotación y ritmo</CardTitle>
+              {sabResumen.acotadas > 0 && <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">dotación acotada cada 15 días (cubren extras TT)</Badge>}
+            </div>
+            <CardDescription>
+              {`${sabResumen.total} sábados con actividad · mediana de dotación ${n1(sabResumen.personasMediana)} personas · ritmo ${n1(sabResumen.ritmo)} bultos/h`}
+              {sabResumen.acotadas > 0 && ` · ${sabResumen.acotadas} sábados operan con dotación acotada (promedio ${n1(sabResumen.personasAcotadasProm)} personas contra ${n1(sabResumen.personasRestoProm)} del resto): esos días la operación la cubre personal que viene del turno tarde como extras`}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={sab.map((s) => ({ ...s, etiqueta: fechaCorta(s.fecha) }))} margin={{ left: 4, right: 8, top: 12, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="etiqueta" tick={{ fontSize: 9 }} interval={0} angle={-35} textAnchor="end" height={54} />
+                <YAxis yAxisId="p" tick={{ fontSize: 10 }} />
+                <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Legend />
+                <Bar yAxisId="p" dataKey="personas" name="Dotación (personas)" radius={[3, 3, 0, 0]}>
+                  {sab.map((s) => <Cell key={s.fecha} fill={s.dotacionAcotada ? COLORES[2] : COLORES[0]} />)}
+                </Bar>
+                <Line yAxisId="r" dataKey="ritmo" name="Ritmo (bultos/h)" stroke={COLORES[3]} strokeWidth={2} />
+              </ComposedChart>
+            </ResponsiveContainer>
+            <ScrollArea className="h-[300px] rounded-md border">
+              <Table>
+                <TableHeader className="sticky top-0 bg-background">
+                  <TableRow>
+                    <TableHead>Sábado</TableHead>
+                    <TableHead className="text-right">Dotación</TableHead>
+                    <TableHead className="text-right">c/ extras</TableHead>
+                    <TableHead className="text-right">Bultos</TableHead>
+                    <TableHead className="text-right">% extras</TableHead>
+                    <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sab.map((s) => (
+                    <TableRow key={s.fecha} className={s.dotacionAcotada ? 'bg-red-50/60' : undefined}>
+                      <TableCell className="font-medium whitespace-nowrap">
+                        {fechaCorta(s.fecha)}
+                        {s.dotacionAcotada && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100">dotación acotada</Badge>}
+                        {s.esFeriado && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100" title={s.feriadoManana ?? undefined}>feriado</Badge>}
+                        {!s.esFeriado && s.bultosFeriado > 0 && <Badge variant="outline" className="ml-1 border-red-200 bg-red-50 text-red-700" title={`Noche TN que antecede a ${s.feriadoManana ?? 'feriado'}`}>noche TN</Badge>}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums font-semibold">{s.personas}</TableCell>
+                      <TableCell className="text-right tabular-nums">{s.personasExtras || '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(s.bultosNormales)}{s.bultosFeriado > 0 ? ` + ${n(s.bultosFeriado)} fer.` : ''}</TableCell>
+                      <TableCell className="text-right tabular-nums">{pct(s.pctExtras)}</TableCell>
+                      <TableCell className="text-right tabular-nums font-semibold">{n1(s.ritmo)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Bultos por actividad (2 · 4 · jaula) */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Bultos por actividad (2 · 4 · jaula)</CardTitle>
+          <CardDescription>Desagregado de la preparación según la columna ACTIVIDAD del archivo H61. El ritmo usa horas-hombre aproximadas por actividad (un operario puede alternar actividades dentro del mismo día)</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!data.tieneActividad ? (
+            <p className="text-sm text-muted-foreground py-4 text-center">
+              El desagregado por actividad todavía no está disponible: volvé a cargar el archivo H61 (doble clic en CARGAR_ARCHIVOS.bat) para que el sistema procese la columna ACTIVIDAD.
+            </p>
+          ) : (
+            <>
+              <ResponsiveContainer width="100%" height={120 + 36 * data.porActividad.length}>
+                <BarChart layout="vertical" data={data.porActividad.map((a) => ({ ...a, nombre: etiquetaActividad(a.actividad) }))} margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                  <YAxis type="category" dataKey="nombre" width={110} tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="bultos" name="Bultos" fill={COLORES[0]} radius={[0, 3, 3, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Actividad</TableHead>
+                    <TableHead className="text-right">Bultos</TableHead>
+                    <TableHead className="text-right">% del total</TableHead>
+                    <TableHead className="text-right">Bultos por día</TableHead>
+                    <TableHead className="text-right">Op-días</TableHead>
+                    <TableHead className="text-right">Horas-hombre</TableHead>
+                    <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.porActividad.map((a) => (
+                    <TableRow key={a.actividad}>
+                      <TableCell className="font-medium">{etiquetaActividad(a.actividad)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(a.bultos)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{pct(a.pct)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(a.bultosPorDia)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(a.opDias)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(a.horas)} h</TableCell>
+                      <TableCell className="text-right tabular-nums font-semibold">{n1(a.ritmo)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -347,39 +519,6 @@ export function CapacidadTab() {
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
-
-            {/* Rankings: días que más se producen / días que decaen */}
-            <div className="grid gap-4 lg:grid-cols-2">
-              {([
-                { titulo: 'Los días que más se producen', icono: TrendingUp, filas: ranking.top, tono: 'text-emerald-700' },
-                { titulo: 'Los días que decaen', icono: TrendingDown, filas: ranking.bottom, tono: 'text-red-700' },
-              ]).map((bloque) => (
-                <div key={bloque.titulo} className="rounded-lg border overflow-hidden">
-                  <p className={`text-sm font-medium flex items-center gap-2 px-3 py-2 border-b bg-muted/40 ${bloque.tono}`}>
-                    <bloque.icono className="h-4 w-4" /> {bloque.titulo}
-                  </p>
-                  <Table>
-                    <TableBody>
-                      {bloque.filas.map((s) => (
-                        <TableRow key={s.fecha} className={s.esFeriado || s.bultosFeriado > 0 ? 'bg-red-50/60' : undefined}>
-                          <TableCell className="font-medium whitespace-nowrap">
-                            {fechaCorta(s.fecha)}
-                            {s.esFeriado && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100" title={s.feriado ?? undefined}>feriado</Badge>}
-                            {!s.esFeriado && s.bultosFeriado > 0 && <Badge variant="outline" className="ml-1 border-red-200 bg-red-50 text-red-700" title={`Noche TN que antecede a ${s.feriadoManana ?? 'feriado'}`}>noche TN</Badge>}
-                          </TableCell>
-                          <TableCell className="text-right tabular-nums">{n(s.bultos)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{s.ops} pers.</TableCell>
-                          <TableCell className={`text-right tabular-nums font-semibold ${s.vsProm === null ? '' : s.vsProm >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                            {s.vsProm === null ? '—' : `${s.vsProm >= 0 ? '+' : ''}${s.vsProm}%`}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">La tercera columna compara los bultos del día contra el promedio de un día normal del período ({n(comp.normal.bultosPorDia)} bultos). Las vísperas con noche TN feriada se marcan en rojo aunque el día en sí no sea feriado.</p>
           </CardContent>
         </Card>
       )}

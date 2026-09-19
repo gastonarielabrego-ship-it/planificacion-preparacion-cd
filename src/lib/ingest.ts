@@ -60,6 +60,7 @@ interface H61Row {
   TURNO?: unknown
   OPERARIO?: unknown
   NOMBRE?: unknown
+  ACTIVIDAD?: unknown
   CIRCUITO?: unknown
   TOTAL?: unknown
   [k: string]: unknown
@@ -170,6 +171,7 @@ async function clearTipo(tipo: TipoCarga) {
     await db.h61TurnoHora.deleteMany({})
     await db.h61OpHora.deleteMany({})
     await db.h61Circuito.deleteMany({})
+    await db.h61Actividad.deleteMany({})
   } else if (tipo === 'tm') await db.tiempoMuerto.deleteMany({})
   else if (tipo === 'picking') await db.pickingEvento.deleteMany({})
   else if (tipo === 'prodcirc') await db.prodCircuito.deleteMany({})
@@ -244,6 +246,9 @@ async function ingestH61(records: Record<string, unknown>[]) {
   const op = new Map<string, { fecha: Date; operario: string; nombre: string | null; funcion: string; turno: string; horas: boolean[]; bultosHora: number[]; bultos: number; horasPorTurno: Map<string, number> }>()
   const th = new Map<string, { fecha: Date; turno: string; hora: number; bultos: number; ops: Set<string> }>()
   const ci = new Map<string, { fecha: Date; circuito: string; funcion: string; bultos: number }>()
+  // por actividad (columna ACTIVIDAD: 2, 3, 4, JAULA...): bultos, operarios y horas-hombre
+  // (horas por operario con horas activas distintas, para no duplicar si comparte hora entre circuitos)
+  const act = new Map<string, { fecha: Date; actividad: string; bultos: number; ops: Set<string>; horasPorOp: Map<string, Set<number>> }>()
   let errores = 0
 
   for (const r of records) {
@@ -259,6 +264,7 @@ async function ingestH61(records: Record<string, unknown>[]) {
     const sumaHoras = horasRow.reduce((a, b) => a + Math.max(0, b), 0)
     if (totalRow === 0 && sumaHoras > 0) totalRow = sumaHoras
     const circuito = str(row.CIRCUITO ?? row.circuito) ?? '?'
+    const actividad = (str(row.ACTIVIDAD ?? row.actividad) ?? '?').toUpperCase()
 
     // por operario-dia: sumar horas (pueden solaparse filas por circuito)
     const key = `${fecha.toISOString().slice(0, 10)}|${operario}`
@@ -294,6 +300,16 @@ async function ingestH61(records: Record<string, unknown>[]) {
     let c = ci.get(k3)
     if (!c) { c = { fecha, circuito, funcion, bultos: 0 }; ci.set(k3, c) }
     c.bultos += totalRow
+
+    // por actividad-fecha
+    const k4 = `${fecha.toISOString().slice(0, 10)}|${actividad}`
+    let a = act.get(k4)
+    if (!a) { a = { fecha, actividad, bultos: 0, ops: new Set(), horasPorOp: new Map() }; act.set(k4, a) }
+    a.bultos += totalRow
+    a.ops.add(operario)
+    let hs = a.horasPorOp.get(operario)
+    if (!hs) { hs = new Set(); a.horasPorOp.set(operario, hs) }
+    horasRow.forEach((v, i) => { if (v !== 0) hs!.add(i) })
   }
 
   // construir filas finales
@@ -330,12 +346,20 @@ async function ingestH61(records: Record<string, unknown>[]) {
   }
   const thRows = [...th.values()].map((t) => ({ fecha: t.fecha, turno: t.turno, hora: t.hora, bultos: t.bultos, operarios: t.ops.size }))
   const ciRows = [...ci.values()]
+  const actRows = [...act.values()].map((a) => ({
+    fecha: a.fecha,
+    actividad: a.actividad,
+    bultos: a.bultos,
+    operarios: a.ops.size,
+    horas: [...a.horasPorOp.values()].reduce((acc, s) => acc + s.size, 0),
+  }))
 
   await clearTipo('h61')
   for (const c of chunk(ops, 400)) await db.h61OpDia.createMany({ data: c })
   for (const c of chunk(thRows, 400)) await db.h61TurnoHora.createMany({ data: c })
   for (const c of chunk(opHoraRows, 400)) await db.h61OpHora.createMany({ data: c })
   for (const c of chunk(ciRows, 400)) await db.h61Circuito.createMany({ data: c })
+  for (const c of chunk(actRows, 400)) await db.h61Actividad.createMany({ data: c })
 
   return { insertados: ops.length, errores, rows: ops }
 }

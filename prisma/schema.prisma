@@ -72,6 +72,18 @@ model H61Circuito {
   @@index([fecha])
 }
 
+// H61 pre-agregado: produccion por actividad (columna ACTIVIDAD del archivo: 2, 3, 4, JAULA...)
+model H61Actividad {
+  id        Int      @id @default(autoincrement())
+  fecha     DateTime
+  actividad String
+  bultos    Int
+  operarios Int
+  horas     Int
+  @@unique([fecha, actividad])
+  @@index([fecha])
+}
+
 // Tiempos muertos normalizados
 model TiempoMuerto {
   id          Int      @id @default(autoincrement())

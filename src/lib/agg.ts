@@ -326,12 +326,13 @@ function mediana(vals: number[]): number {
 }
 
 export async function getCapacidad(f: Filtros) {
-  const [ops, oh, th] = await Promise.all([
+  const [ops, oh, th, act] = await Promise.all([
     db.h61OpDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } }),
     db.h61OpHora.findMany({ where: { fecha: rango(f) } }),
     db.h61TurnoHora.findMany({ where: { fecha: rango(f) } }),
+    db.h61Actividad.findMany({ where: { fecha: rango(f) } }),
   ])
-  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, feriados: [], comparativa: null, tieneOpHora: oh.length > 0 }
+  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, feriados: [], comparativa: null, porDiaSemana: [], sabados: [], sabadosResumen: null, porActividad: [], tieneActividad: act.length > 0, tieneOpHora: oh.length > 0 }
 
   // --- feriados argentinos (se sincronizan on-demand desde api.argentinadatos.com.ar) ---
   const anios = new Set<number>()
@@ -675,6 +676,95 @@ export async function getCapacidad(f: Filtros) {
     diasFeriadoPerfil: fechasFeriadoPerfil.size,
   }
 
+  // --- ritmo por día de semana (medición normal: excluye jornadas feriadas) ---
+  const DIAS_SEM_CAP = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+  const semAgg = new Map<number, { dias: number; bultos: number; horas: number; personas: number; ritmos: number[]; bultosExtras: number }>()
+  for (const s of serie) {
+    if (s.opDiasNormales === 0) continue
+    const dow = new Date(s.fecha + 'T00:00:00.000Z').getUTCDay()
+    let m = semAgg.get(dow)
+    if (!m) { m = { dias: 0, bultos: 0, horas: 0, personas: 0, ritmos: [], bultosExtras: 0 }; semAgg.set(dow, m) }
+    m.dias += 1
+    m.bultos += s.bultosNormales
+    m.bultosExtras += s.bultosExtras
+    m.horas += s.horasNormales
+    m.personas += opsPorDia.get(s.fecha)?.opsNormales.size ?? 0
+    if (s.ritmo !== null) m.ritmos.push(s.ritmo)
+  }
+  const porDiaSemana = [1, 2, 3, 4, 5, 6, 0].filter((d) => semAgg.has(d)).map((dow) => {
+    const m = semAgg.get(dow)!
+    return {
+      dow,
+      dia: DIAS_SEM_CAP[dow],
+      dias: m.dias,
+      bultosProm: Math.round(m.bultos / m.dias),
+      personasProm: +(m.personas / m.dias).toFixed(1),
+      horasProm: Math.round(m.horas / m.dias),
+      ritmo: m.horas ? +(m.bultos / m.horas).toFixed(1) : null,
+      ritmoMediana: m.ritmos.length ? +mediana(m.ritmos).toFixed(1) : null,
+      pctExtras: m.bultos ? +((m.bultosExtras / m.bultos) * 100).toFixed(1) : 0,
+    }
+  })
+
+  // --- sábados: serie completa de la dotación de cada sábado ---
+  // En los sábados de dotación acotada la operación la cubre personal que viene
+  // del turno tarde (extras TT); se marcan por debajo del 65% de la mediana.
+  const sabadosBase = serie
+    .filter((s) => new Date(s.fecha + 'T00:00:00.000Z').getUTCDay() === 6 && s.opDiasNormales > 0)
+    .map((s) => {
+      const p = opsPorDia.get(s.fecha)
+      return {
+        fecha: s.fecha,
+        bultos: s.bultos,
+        bultosNormales: s.bultosNormales,
+        personas: p?.opsNormales.size ?? 0,
+        personasExtras: p?.opsExtras.size ?? 0,
+        opDias: s.opDiasNormales,
+        horas: s.horasNormales,
+        ritmo: s.ritmo,
+        pctExtras: s.pctExtras,
+        bultosFeriado: s.bultosFeriado,
+        feriadoManana: s.feriadoManana,
+        esFeriado: s.esFeriado,
+      }
+    })
+  const medianaPersSab = mediana(sabadosBase.map((s) => s.personas))
+  const sabados = sabadosBase
+    .map((s) => ({ ...s, dotacionAcotada: s.personas < medianaPersSab * 0.65 }))
+    .sort((a, b) => a.fecha.localeCompare(b.fecha))
+  const sabAcotadas = sabados.filter((s) => s.dotacionAcotada)
+  const sabadosResumen = {
+    total: sabados.length,
+    personasMediana: +medianaPersSab.toFixed(1),
+    acotadas: sabAcotadas.length,
+    personasAcotadasProm: sabAcotadas.length ? +(sabAcotadas.reduce((a, s) => a + s.personas, 0) / sabAcotadas.length).toFixed(1) : null,
+    personasRestoProm: sabados.length - sabAcotadas.length ? +((sabados.filter((s) => !s.dotacionAcotada).reduce((a, s) => a + s.personas, 0)) / (sabados.length - sabAcotadas.length)).toFixed(1) : null,
+    ritmo: sabadosBase.reduce((a, s) => a + s.horas, 0) ? +(sabadosBase.reduce((a, s) => a + s.bultosNormales, 0) / sabadosBase.reduce((a, s) => a + s.horas, 0)).toFixed(1) : null,
+  }
+
+  // --- bultos por actividad (columna ACTIVIDAD del archivo: 2, 3, 4, JAULA...) ---
+  const actAgg = new Map<string, { bultos: number; dias: Set<string>; opDias: number; horas: number }>()
+  for (const r of act) {
+    const k = r.actividad || 'SIN DATO'
+    let a = actAgg.get(k)
+    if (!a) { a = { bultos: 0, dias: new Set(), opDias: 0, horas: 0 }; actAgg.set(k, a) }
+    a.bultos += r.bultos
+    a.dias.add(dia(r.fecha))
+    a.opDias += r.operarios
+    a.horas += r.horas
+  }
+  const bultosActTotal = [...actAgg.values()].reduce((a, v) => a + v.bultos, 0)
+  const porActividad = [...actAgg.entries()].map(([actividad, a]) => ({
+    actividad,
+    bultos: a.bultos,
+    dias: a.dias.size,
+    bultosPorDia: Math.round(a.bultos / Math.max(1, a.dias.size)),
+    opDias: a.opDias,
+    horas: a.horas,
+    ritmo: a.horas ? +(a.bultos / a.horas).toFixed(1) : null,
+    pct: bultosActTotal ? +((a.bultos / bultosActTotal) * 100).toFixed(1) : 0,
+  })).sort((a, b) => b.bultos - a.bultos)
+
   // --- resumen del periodo filtrado (medición normal = solo op-días no feriados) ---
   const normales = serie.filter((s) => s.opDiasNormales > 0)
   const bultos = normales.reduce((a, s) => a + s.bultosNormales, 0)
@@ -713,7 +803,7 @@ export async function getCapacidad(f: Filtros) {
     pctExtrasTotal: bultos + bultosFeriado ? +(((bultosExtras + bultosFeriado) / (bultos + bultosFeriado)) * 100).toFixed(1) : 0,
   }
 
-  return { serie, porMes, porTurno, perfilHora, resumen, feriados: feriadosDetalle, comparativa, tieneOpHora: oh.length > 0 }
+  return { serie, porMes, porTurno, perfilHora, resumen, feriados: feriadosDetalle, comparativa, porDiaSemana, sabados, sabadosResumen, porActividad, tieneActividad: act.length > 0, tieneOpHora: oh.length > 0 }
 }
 
 // ============ TIEMPOS MUERTOS ============
