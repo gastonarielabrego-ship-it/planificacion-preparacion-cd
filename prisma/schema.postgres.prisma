@@ -137,6 +137,14 @@ model ProdCircuito {
   @@index([sector])
 }
 
+// Feriados nacionales de Argentina (fuente: api.argentinadatos.com.ar)
+model Feriado {
+  id     Int      @id @default(autoincrement())
+  fecha  DateTime @unique
+  nombre String
+  tipo   String
+}
+
 // Trazabilidad de cargas
 model UploadBatch {
   id        String   @id

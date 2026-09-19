@@ -52,10 +52,10 @@ export function CargaDatosTab() {
       fd.append('tipo', tipo)
       fd.append('file', file)
       const r = await fetch('/api/upload', { method: 'POST', body: fd })
-      const j = await r.json()
-      if (!r.ok || j.error) throw new Error(j.error ?? 'Error al subir')
-      setRes((prev) => ({ ...prev, [tipo]: `OK: ${n(j.insertados)} filas procesadas (${j.desde ?? ''} → ${j.hasta ?? ''})` }))
-      toast({ title: `Carga de ${tipo} completada`, description: `${n(j.insertados)} filas` })
+      const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+      if (!r.ok || j.error) throw new Error(String(j.error ?? `Error HTTP ${r.status} al procesar el archivo`))
+      setRes((prev) => ({ ...prev, [tipo]: `OK: ${n(j.insertados as number | null)} filas procesadas (${j.desde ?? ''} → ${j.hasta ?? ''})` }))
+      toast({ title: `Carga de ${tipo} completada`, description: `${n(j.insertados as number | null)} filas` })
       qc.invalidateQueries()
     } catch (e) {
       const msg = (e as Error).message

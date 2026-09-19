@@ -1,6 +1,7 @@
 // Agregaciones server-side para los modulos del dashboard.
 // Los volumenes (H61 ~39k op-dias, TM ~12k, Ola ~1k, Picking <=1M) se procesan en memoria.
 import { db } from '@/lib/db'
+import { getFeriadosMap } from './feriados'
 
 export interface Filtros {
   from?: string
@@ -329,21 +330,35 @@ export async function getCapacidad(f: Filtros) {
     db.h61OpDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } }),
     db.h61OpHora.findMany({ where: { fecha: rango(f) } }),
   ])
-  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, tieneOpHora: oh.length > 0 }
+  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, feriados: [], tieneOpHora: oh.length > 0 }
+
+  // --- feriados argentinos (se sincronizan on-demand desde api.argentinadatos.com.ar) ---
+  const anios = new Set<number>()
+  for (const r of ops) anios.add(r.fecha.getUTCFullYear())
+  const feriadosMap = await getFeriadosMap([...anios])
 
   // --- serie diaria ---
+  // Regla de feriados: en un dia feriado TODO el tiempo trabajado y sus bultos
+  // cuentan como horas extra, y el dia se mide aparte (no influye en los
+  // promedios, medianas, perfiles ni tabla por turno de la medicion normal).
   const porDia = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; ops: Set<string>; opsExtras: Set<string>; opDias: number }>()
   for (const r of ops) {
     const k = dia(r.fecha)
+    const fer = feriadosMap.has(k)
     let p = porDia.get(k)
     if (!p) { p = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, ops: new Set(), opsExtras: new Set(), opDias: 0 }; porDia.set(k, p) }
     p.bultos += r.bultos
-    p.bultosBase += r.bultosBase
-    p.bultosExtras += r.bultosExtras
+    if (fer) {
+      p.bultosExtras += r.bultos
+      p.horasExtras += r.horasActivas
+    } else {
+      p.bultosBase += r.bultosBase
+      p.bultosExtras += r.bultosExtras
+      p.horasExtras += r.extras
+    }
     p.horas += r.horasActivas
-    p.horasExtras += r.extras
     p.ops.add(r.operario)
-    if (r.extras > 0) p.opsExtras.add(r.operario)
+    if (fer || r.extras > 0) p.opsExtras.add(r.operario)
     p.opDias += 1
   }
 
@@ -359,14 +374,23 @@ export async function getCapacidad(f: Filtros) {
     ops: p.ops.size,
     opsExtras: p.opsExtras.size,
     opDias: p.opDias,
+    esFeriado: feriadosMap.has(fecha),
+    feriado: feriadosMap.get(fecha)?.nombre ?? null,
   }))
 
-  // --- agregados por mes ---
-  const mesAgg = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; opDias: number; ops: Set<string>; opsExtras: Set<string>; ritmos: number[]; dias: number }>()
+  // --- agregados por mes (medicion normal sin feriados; la produccion de
+  //     feriados se acumula aparte en bultosFeriado) ---
+  const mesAgg = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; bultosFeriado: number; horas: number; horasExtras: number; horasFeriado: number; opDias: number; ops: Set<string>; opsExtras: Set<string>; ritmos: number[]; dias: number; diasFeriado: number }>()
   for (const s of serie) {
     const k = s.fecha.slice(0, 7)
     let m = mesAgg.get(k)
-    if (!m) { m = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, opDias: 0, ops: new Set(), opsExtras: new Set(), ritmos: [], dias: 0 }; mesAgg.set(k, m) }
+    if (!m) { m = { bultos: 0, bultosBase: 0, bultosExtras: 0, bultosFeriado: 0, horas: 0, horasExtras: 0, horasFeriado: 0, opDias: 0, ops: new Set(), opsExtras: new Set(), ritmos: [], dias: 0, diasFeriado: 0 }; mesAgg.set(k, m) }
+    if (s.esFeriado) {
+      m.diasFeriado += 1
+      m.bultosFeriado += s.bultos
+      m.horasFeriado += s.horas
+      continue
+    }
     m.dias += 1
     m.bultos += s.bultos
     m.bultosBase += s.bultosBase
@@ -383,9 +407,10 @@ export async function getCapacidad(f: Filtros) {
     let p = opsPorDia.get(k)
     if (!p) { p = { ops: new Set(), opsExtras: new Set() }; opsPorDia.set(k, p) }
     p.ops.add(r.operario)
-    if (r.extras > 0) p.opsExtras.add(r.operario)
+    if (feriadosMap.has(k) || r.extras > 0) p.opsExtras.add(r.operario)
   }
   for (const s of serie) {
+    if (s.esFeriado) continue
     const m = mesAgg.get(s.fecha.slice(0, 7))
     const p = opsPorDia.get(s.fecha)
     if (!m || !p) continue
@@ -395,13 +420,16 @@ export async function getCapacidad(f: Filtros) {
   const porMes = [...mesAgg.entries()].sort().map(([mes, m]) => ({
     mes,
     dias: m.dias,
+    diasFeriado: m.diasFeriado,
     actividades: m.opDias,
     personas: m.ops.size,
     personasExtras: m.opsExtras.size,
     bultos: m.bultos,
     bultosBase: m.bultosBase,
     bultosExtras: m.bultosExtras,
+    bultosFeriado: m.bultosFeriado,
     pctExtras: m.bultos ? +((m.bultosExtras / m.bultos) * 100).toFixed(1) : 0,
+    pctExtrasTotal: (m.bultos + m.bultosFeriado) ? +(((m.bultosExtras + m.bultosFeriado) / (m.bultos + m.bultosFeriado)) * 100).toFixed(1) : 0,
     horas: m.horas,
     horasExtras: m.horasExtras,
     ritmoProm: m.horas ? +(m.bultos / m.horas).toFixed(1) : null,
@@ -415,6 +443,7 @@ export async function getCapacidad(f: Filtros) {
     const h = horasAgg[r.hora]
     if (!h) continue
     const k = dia(r.fecha)
+    if (feriadosMap.has(k)) continue // perfil de la medicion normal: feriados aparte
     h.fechas.add(k)
     const destino = r.esExtra ? h.extras : h.jornada
     let set = destino.get(k)
@@ -439,6 +468,7 @@ export async function getCapacidad(f: Filtros) {
   // --- resumen por turno (ventanas: TM 6-14, TT 14-22, TN 23-06) ---
   const turnoAgg = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; opDias: number; ops: Set<string>; opsExtras: Set<string> }>()
   for (const r of ops) {
+    if (feriadosMap.has(dia(r.fecha))) continue // feriados se miden aparte
     let t = turnoAgg.get(r.turno)
     if (!t) { t = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, opDias: 0, ops: new Set(), opsExtras: new Set() }; turnoAgg.set(r.turno, t) }
     t.bultos += r.bultos
@@ -465,21 +495,41 @@ export async function getCapacidad(f: Filtros) {
     ritmoProm: t.horas ? +(t.bultos / t.horas).toFixed(1) : null,
   }))
 
-  // --- resumen del periodo filtrado ---
-  const bultos = serie.reduce((a, s) => a + s.bultos, 0)
-  const bultosBase = serie.reduce((a, s) => a + s.bultosBase, 0)
-  const bultosExtras = serie.reduce((a, s) => a + s.bultosExtras, 0)
-  const horas = serie.reduce((a, s) => a + s.horas, 0)
-  const horasExtras = serie.reduce((a, s) => a + s.horasExtras, 0)
+  // --- feriados con actividad (se informan aparte) ---
+  const feriadosDetalle = serie.filter((s) => s.esFeriado).map((s) => ({
+    fecha: s.fecha,
+    nombre: s.feriado ?? 'Feriado',
+    tipo: feriadosMap.get(s.fecha)?.tipo ?? 'inamovible',
+    personas: s.ops,
+    opDias: s.opDias,
+    bultos: s.bultos,
+    horas: s.horas,
+    ritmo: s.ritmo,
+  }))
+
+  // --- resumen del periodo filtrado (medicion normal = solo dias no feriados) ---
+  const normales = serie.filter((s) => !s.esFeriado)
+  const bultos = normales.reduce((a, s) => a + s.bultos, 0)
+  const bultosBase = normales.reduce((a, s) => a + s.bultosBase, 0)
+  const bultosExtras = normales.reduce((a, s) => a + s.bultosExtras, 0)
+  const horas = normales.reduce((a, s) => a + s.horas, 0)
+  const horasExtras = normales.reduce((a, s) => a + s.horasExtras, 0)
+  const bultosFeriado = serie.reduce((a, s) => a + (s.esFeriado ? s.bultos : 0), 0)
+  const horasFeriado = serie.reduce((a, s) => a + (s.esFeriado ? s.horas : 0), 0)
   const personas = new Set<string>()
   const personasExtras = new Set<string>()
-  for (const p of opsPorDia.values()) {
+  const personasFeriado = new Set<string>()
+  for (const [k, p] of opsPorDia) {
+    if (feriadosMap.has(k)) {
+      for (const op of p.ops) personasFeriado.add(op)
+      continue
+    }
     for (const op of p.ops) personas.add(op)
     for (const op of p.opsExtras) personasExtras.add(op)
   }
   const resumen = {
-    dias: serie.length,
-    actividades: serie.reduce((a, s) => a + s.opDias, 0),
+    dias: normales.length,
+    actividades: normales.reduce((a, s) => a + s.opDias, 0),
     personas: personas.size,
     personasExtras: personasExtras.size,
     bultos,
@@ -489,10 +539,16 @@ export async function getCapacidad(f: Filtros) {
     horas,
     horasExtras,
     ritmoProm: horas ? +(bultos / horas).toFixed(1) : null,
-    ritmoMediana: +mediana(serie.map((s) => s.ritmo ?? 0)).toFixed(1),
+    ritmoMediana: +mediana(normales.map((s) => s.ritmo ?? 0)).toFixed(1),
+    // feriados: medicion aparte; sus bultos cuentan como extras en el total
+    diasFeriado: serie.length - normales.length,
+    bultosFeriado,
+    horasFeriado,
+    personasFeriado: personasFeriado.size,
+    pctExtrasTotal: bultos + bultosFeriado ? +(((bultosExtras + bultosFeriado) / (bultos + bultosFeriado)) * 100).toFixed(1) : 0,
   }
 
-  return { serie, porMes, porTurno, perfilHora, resumen, tieneOpHora: oh.length > 0 }
+  return { serie, porMes, porTurno, perfilHora, resumen, feriados: feriadosDetalle, tieneOpHora: oh.length > 0 }
 }
 
 // ============ TIEMPOS MUERTOS ============
