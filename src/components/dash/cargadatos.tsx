@@ -78,6 +78,10 @@ export function CargaDatosTab() {
       toast({ title: 'Elegí un archivo primero', variant: 'destructive' })
       return
     }
+    if (file.size === 0) {
+      toast({ title: 'El archivo está vacío o no se pudo leer', variant: 'destructive' })
+      return
+    }
     setSubiendo(tipo)
     setRes((r) => ({ ...r, [tipo]: '' }))
     try {
