@@ -192,6 +192,41 @@ async function ingestOla(records: Record<string, unknown>[]) {
 
 // Ingesta de H61 (filas crudas por operario-circuito-actividad): pre-agrega
 
+// Ventana de jornada base por turno (buckets = hora de inicio de cada hora):
+// - TM (M): 6 a 14 -> buckets 6..13. Extras posibles hasta las 18 (buckets 14..17).
+// - TT (T): 14 a 22 -> buckets 14..21. Extras pueden empezar a las 10 (10..13) o pasar las 22.
+// - TN (N): 23 a 06 -> buckets 23 y 0..5 (7 h). Extras posibles desde las 18 (18..22) o hasta las 10 (6..9).
+// La jornada del TN (23:00 del dia D + 00:00-06:00 del D+1) queda agrupada bajo la fecha D del archivo.
+function ventanaTurno(turno: string): Set<number> | null {
+  if (turno === 'M') return new Set([6, 7, 8, 9, 10, 11, 12, 13])
+  if (turno === 'T') return new Set([14, 15, 16, 17, 18, 19, 20, 21])
+  if (turno === 'N') return new Set([23, 0, 1, 2, 3, 4, 5])
+  return null
+}
+
+// Turno propio del operario en el dia: el bloque con MAS horas activas.
+// El TURNO de la primera fila puede mentir (ej. bloque previo de extras de un
+// TT que arranca a las 10 viene etiquetado M): el turno real es el dominante.
+function turnoDominante(horasPorTurno: Map<string, number>, fallback: string): string {
+  let best = fallback
+  let max = -1
+  for (const [t, n] of horasPorTurno) if (n > max) { max = n; best = t }
+  return best
+}
+
+// Indices de horas activas que cuentan como extras para un operario-dia:
+// con turno conocido, toda hora activa fuera de la ventana de su turno
+// (antes o despues de la jornada base); con turno desconocido, regla general
+// de las primeras 8 horas activas = jornada y el resto = extras.
+function horasExtrasDe(horas: boolean[], turno: string): number[] {
+  const ventana = ventanaTurno(turno)
+  const activas: number[] = []
+  horas.forEach((v, i) => { if (v) activas.push(i) })
+  if (ventana) return activas.filter((h) => !ventana.has(h))
+  const orden = ordenarHorasActivas(horas)
+  return orden.slice(Math.max(0, orden.length - Math.max(0, orden.length - 8)))
+}
+
 // Ordena las horas activas de un operario-dia en orden cronologico del turno.
 // Si las horas cruzan la medianoche (turno noche: >=18 y <=5), el dia arranca
 // por la tarde/noche y continua en la madrugada: [19..23, 0..5].
@@ -206,7 +241,7 @@ function ordenarHorasActivas(horas: boolean[]): number[] {
 
 async function ingestH61(records: Record<string, unknown>[]) {
   // acumuladores
-  const op = new Map<string, { fecha: Date; operario: string; nombre: string | null; funcion: string; turno: string; horas: boolean[]; bultosHora: number[]; bultos: number }>()
+  const op = new Map<string, { fecha: Date; operario: string; nombre: string | null; funcion: string; turno: string; horas: boolean[]; bultosHora: number[]; bultos: number; horasPorTurno: Map<string, number> }>()
   const th = new Map<string, { fecha: Date; turno: string; hora: number; bultos: number; ops: Set<string> }>()
   const ci = new Map<string, { fecha: Date; circuito: string; funcion: string; bultos: number }>()
   let errores = 0
@@ -229,14 +264,17 @@ async function ingestH61(records: Record<string, unknown>[]) {
     const key = `${fecha.toISOString().slice(0, 10)}|${operario}`
     let o = op.get(key)
     if (!o) {
-      o = { fecha, operario, nombre, funcion, turno, horas: new Array(24).fill(false), bultosHora: new Array(24).fill(0), bultos: 0 }
+      o = { fecha, operario, nombre, funcion, turno, horas: new Array(24).fill(false), bultosHora: new Array(24).fill(0), bultos: 0, horasPorTurno: new Map() }
       op.set(key, o)
     }
     if (nombre && !o.nombre) o.nombre = nombre
     o.bultos += totalRow
     horasRow.forEach((v, i) => {
       if (v !== 0) {
-        if (!o!.horas[i]) o!.horas[i] = true
+        if (!o!.horas[i]) {
+          o!.horas[i] = true
+          o!.horasPorTurno.set(turno, (o.horasPorTurno.get(turno) ?? 0) + 1)
+        }
         o!.bultosHora[i] += v
       }
     })
@@ -261,17 +299,18 @@ async function ingestH61(records: Record<string, unknown>[]) {
   // construir filas finales
   const ops = [...op.values()].map((o) => {
     const horasActivas = o.horas.filter(Boolean).length
-    const extras = Math.max(0, horasActivas - 8)
-    // bultos en extras: los de las ultimas horas activas del turno (orden cronologico)
-    const idxActivas = ordenarHorasActivas(o.horas)
-    const extrasIdx = idxActivas.slice(Math.max(0, idxActivas.length - extras))
+    // turno propio del operario: bloque dominante (el de mas horas activas)
+    const turnoPropio = turnoDominante(o.horasPorTurno, o.turno)
+    // bultos en extras: horas activas fuera de la ventana del turno propio
+    const extrasIdx = horasExtrasDe(o.horas, turnoPropio)
+    const extras = extrasIdx.length
     const bultosExtras = extrasIdx.reduce((a, i) => a + Math.max(0, o!.bultosHora[i]), 0)
     return {
       fecha: o.fecha,
       operario: o.operario,
       nombre: o.nombre,
       funcion: o.funcion,
-      turno: o.turno,
+      turno: turnoPropio,
       horasActivas,
       bultos: o.bultos,
       bultosBase: Math.max(0, o.bultos - bultosExtras),
@@ -279,14 +318,14 @@ async function ingestH61(records: Record<string, unknown>[]) {
       extras,
     }
   })
-  // detalle operario x hora: primeras 8 horas activas = jornada, resto = extras
+  // detalle operario x hora: horas dentro de la ventana del turno propio = jornada, fuera = extras
   const opHoraRows: { fecha: Date; operario: string; turno: string; hora: number; bultos: number; esExtra: boolean }[] = []
   for (const o of op.values()) {
+    const turnoPropio = turnoDominante(o.horasPorTurno, o.turno)
+    const extrasSet = new Set(horasExtrasDe(o.horas, turnoPropio))
     const orden = ordenarHorasActivas(o.horas)
-    const extrasCount = Math.max(0, orden.length - 8)
-    const extrasSet = new Set(orden.slice(orden.length - extrasCount))
     for (const h of orden) {
-      opHoraRows.push({ fecha: o.fecha, operario: o.operario, turno: o.turno, hora: h, bultos: Math.max(0, o.bultosHora[h]), esExtra: extrasSet.has(h) })
+      opHoraRows.push({ fecha: o.fecha, operario: o.operario, turno: turnoPropio, hora: h, bultos: Math.max(0, o.bultosHora[h]), esExtra: extrasSet.has(h) })
     }
   }
   const thRows = [...th.values()].map((t) => ({ fecha: t.fecha, turno: t.turno, hora: t.hora, bultos: t.bultos, operarios: t.ops.size }))

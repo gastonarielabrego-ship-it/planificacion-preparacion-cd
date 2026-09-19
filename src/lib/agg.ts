@@ -329,7 +329,7 @@ export async function getCapacidad(f: Filtros) {
     db.h61OpDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } }),
     db.h61OpHora.findMany({ where: { fecha: rango(f) } }),
   ])
-  if (!ops.length) return { serie: [], porMes: [], perfilHora: [], resumen: null, tieneOpHora: oh.length > 0 }
+  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, tieneOpHora: oh.length > 0 }
 
   // --- serie diaria ---
   const porDia = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; ops: Set<string>; opsExtras: Set<string>; opDias: number }>()
@@ -436,6 +436,35 @@ export async function getCapacidad(f: Filtros) {
     }
   })
 
+  // --- resumen por turno (ventanas: TM 6-14, TT 14-22, TN 23-06) ---
+  const turnoAgg = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; opDias: number; ops: Set<string>; opsExtras: Set<string> }>()
+  for (const r of ops) {
+    let t = turnoAgg.get(r.turno)
+    if (!t) { t = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, opDias: 0, ops: new Set(), opsExtras: new Set() }; turnoAgg.set(r.turno, t) }
+    t.bultos += r.bultos
+    t.bultosBase += r.bultosBase
+    t.bultosExtras += r.bultosExtras
+    t.horas += r.horasActivas
+    t.horasExtras += r.extras
+    t.opDias += 1
+    t.ops.add(r.operario)
+    if (r.extras > 0) t.opsExtras.add(r.operario)
+  }
+  const NOMBRE_TURNO: Record<string, string> = { M: 'TM (6 a 14)', T: 'TT (14 a 22)', N: 'TN (23 a 06)' }
+  const porTurno = [...turnoAgg.entries()].sort().map(([turno, t]) => ({
+    turno,
+    nombre: NOMBRE_TURNO[turno] ?? turno,
+    opDias: t.opDias,
+    personas: t.ops.size,
+    personasExtras: t.opsExtras.size,
+    bultos: t.bultos,
+    bultosBase: t.bultosBase,
+    bultosExtras: t.bultosExtras,
+    pctExtras: t.bultos ? +((t.bultosExtras / t.bultos) * 100).toFixed(1) : 0,
+    horasExtras: t.horasExtras,
+    ritmoProm: t.horas ? +(t.bultos / t.horas).toFixed(1) : null,
+  }))
+
   // --- resumen del periodo filtrado ---
   const bultos = serie.reduce((a, s) => a + s.bultos, 0)
   const bultosBase = serie.reduce((a, s) => a + s.bultosBase, 0)
@@ -463,7 +492,7 @@ export async function getCapacidad(f: Filtros) {
     ritmoMediana: +mediana(serie.map((s) => s.ritmo ?? 0)).toFixed(1),
   }
 
-  return { serie, porMes, perfilHora, resumen, tieneOpHora: oh.length > 0 }
+  return { serie, porMes, porTurno, perfilHora, resumen, tieneOpHora: oh.length > 0 }
 }
 
 // ============ TIEMPOS MUERTOS ============

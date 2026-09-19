@@ -35,6 +35,7 @@ interface FilaMes {
 interface CapacidadData {
   serie: { fecha: string; bultos: number; bultosBase: number; bultosExtras: number; pctExtras: number; ritmo: number | null; ops: number; opsExtras: number; opDias: number }[]
   porMes: FilaMes[]
+  porTurno: { turno: string; nombre: string; opDias: number; personas: number; personasExtras: number; bultos: number; bultosBase: number; bultosExtras: number; pctExtras: number; horasExtras: number; ritmoProm: number | null }[]
   perfilHora: { hora: number; etiqueta: string; opsJornada: number; opsExtras: number; bultosProm: number }[]
   resumen: {
     dias: number
@@ -90,7 +91,7 @@ export function CapacidadTab() {
           unidad="bultos"
           icono={Layers}
           tono="exito"
-          detalle={`${pct(resumen.bultos ? 100 - resumen.pctExtras : null)} de la preparación total · primeras 8 h de cada operario`}
+          detalle={`${pct(resumen.bultos ? 100 - resumen.pctExtras : null)} de la preparación total · dentro de la jornada del turno`}
         />
         <Kpi
           titulo="Bultos en horas extra"
@@ -122,10 +123,10 @@ export function CapacidadTab() {
         <AlertTitle>¿Cómo se separa jornada y horas extra?</AlertTitle>
         <AlertDescription>
           <p>
-            Cada operario-día se ordena por sus horas con producción: las <b>primeras 8 horas</b> cuentan como <b>jornada base</b>
-            {' '}y sus bultos son <b>preparación sin extras</b>. Las horas que exceden las 8 (típicamente jornadas de 12 h = 4 h extra)
-            y sus bultos cuentan como <b>preparación en horas extra</b>. En el turno noche las horas cruzan la medianoche: se ordenan
-            desde la tarde hasta la madrugada siguiente. El ritmo se mide en <b>bultos por hora-hombre</b>.
+            Cada turno tiene su <b>ventana de jornada base</b>: <b>TM de 6 a 14</b>, <b>TT de 14 a 22</b> y <b>TN de 23 a 6</b> (7 h).
+            Las horas trabajadas fuera de esa ventana cuentan como <b>extras</b>: el TM puede extenderse hasta las 18, el TT puede
+            empezar sus extras a las 10 o pasar de las 22, y el TN desde las 18 o hasta las 10. La jornada del turno noche
+            (las 23 del día + las 00 a 6 siguientes) se agrupa como un único día. El ritmo se mide en <b>bultos por hora-hombre</b>.
           </p>
         </AlertDescription>
       </Alert>
@@ -147,11 +148,51 @@ export function CapacidadTab() {
               <YAxis yAxisId="p" orientation="right" domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
               <Tooltip formatter={(v: number, name: string) => (name.includes('%') ? [pct(v), name] : [n(v), name])} />
               <Legend />
-              <Bar yAxisId="b" dataKey="bultosBase" name="Sin extras (jornada 8 h)" stackId="a" fill={COLORES[0]} radius={[0, 0, 0, 0]} />
+              <Bar yAxisId="b" dataKey="bultosBase" name="Sin extras (jornada del turno)" stackId="a" fill={COLORES[0]} radius={[0, 0, 0, 0]} />
               <Bar yAxisId="b" dataKey="bultosExtras" name="En horas extra" stackId="a" fill={COLORES[1]} radius={[3, 3, 0, 0]} />
               <Line yAxisId="p" dataKey="pctExtras" name="% en extras" stroke={COLORES[2]} strokeWidth={2} dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Preparación por turno */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Preparación por turno</CardTitle>
+          <CardDescription>Jornada base de cada turno (TM 6-14 · TT 14-22 · TN 23-06) y qué parte de su preparación dependió de extras</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Turno</TableHead>
+                <TableHead className="text-right">Op-días</TableHead>
+                <TableHead className="text-right">Personas</TableHead>
+                <TableHead className="text-right">c/ extras</TableHead>
+                <TableHead className="text-right">Bultos sin extras</TableHead>
+                <TableHead className="text-right">Bultos en extras</TableHead>
+                <TableHead className="text-right">% extras</TableHead>
+                <TableHead className="text-right">Horas extra</TableHead>
+                <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(data.porTurno ?? []).map((t) => (
+                <TableRow key={t.turno}>
+                  <TableCell className="font-medium">{t.nombre}</TableCell>
+                  <TableCell className="text-right tabular-nums">{n(t.opDias)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{t.personas}</TableCell>
+                  <TableCell className="text-right tabular-nums">{t.personasExtras || '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums">{n(t.bultosBase)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-amber-700">{t.bultosExtras ? n(t.bultosExtras) : '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums font-semibold">{pct(t.pctExtras)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{n(t.horasExtras)}</TableCell>
+                  <TableCell className="text-right tabular-nums font-semibold">{n1(t.ritmoProm)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
 
@@ -177,7 +218,7 @@ export function CapacidadTab() {
                 <YAxis yAxisId="bultos" orientation="right" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
                 <Tooltip />
                 <Legend />
-                <Bar yAxisId="ops" dataKey="opsJornada" name="Personas en jornada (primeras 8 h)" stackId="ops" fill={COLORES[0]} radius={[0, 0, 0, 0]} />
+                <Bar yAxisId="ops" dataKey="opsJornada" name="Personas en jornada (turno base)" stackId="ops" fill={COLORES[0]} radius={[0, 0, 0, 0]} />
                 <Bar yAxisId="ops" dataKey="opsExtras" name="Personas en horas extra" stackId="ops" fill={COLORES[1]} radius={[3, 3, 0, 0]} />
                 <Line yAxisId="bultos" dataKey="bultosProm" name="Bultos promedio por hora" stroke={COLORES[3]} strokeWidth={2} dot={false} />
               </ComposedChart>
