@@ -5,7 +5,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 300
 
 // Endpoint para el script Python: recibe lotes JSON de filas crudas.
-// Body: { tipo: 'ola'|'h61'|'tm'|'picking', rows: [...], filename?, mapping?, batchId?, final? }
+// Body: { tipo: 'ola'|'h61'|'tm'|'picking'|'prodcirc', rows: [...], filename?, mapping?, batchId?, final? }
 // Con reemplazar=true borra los datos previos del tipo antes de insertar (primer lote).
 
 interface BatchBody {
@@ -22,8 +22,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as BatchBody
     const tipo = body.tipo as TipoCarga
-    if (!tipo || !['ola', 'h61', 'tm', 'picking'].includes(tipo)) {
-      return NextResponse.json({ error: 'tipo invalido: usar ola|h61|tm|picking' }, { status: 400 })
+    if (!tipo || !['ola', 'h61', 'tm', 'picking', 'prodcirc'].includes(tipo)) {
+      return NextResponse.json({ error: 'tipo invalido: usar ola|h61|tm|picking|prodcirc' }, { status: 400 })
     }
     if (!Array.isArray(body.rows)) return NextResponse.json({ error: 'falta rows[]' }, { status: 400 })
 
@@ -38,8 +38,8 @@ export async function POST(req: NextRequest) {
       res = await ingestRows(tipo, body.rows, { batchId, filename: body.filename, mapping: body.mapping ?? null })
       // ingestRows ya registra el batch; para h61 la pre-agregacion se hace completa en cada llamada,
       // por lo que con reemplazar=true el lote debe ser unico (el script usa esa modalidad para h61)
-    } else if (tipo === 'picking') {
-      // picking: insercion incremental por lotes
+    } else if (tipo === 'picking' || tipo === 'prodcirc') {
+      // picking/prodcirc: insercion incremental por lotes (prodcirc deduplica por clave unica)
       const r = await ingestRows(tipo, body.rows, { batchId, filename: body.filename, mapping: body.mapping ?? null })
       res = { insertados: r.insertados, errores: r.errores }
       if (body.final) {

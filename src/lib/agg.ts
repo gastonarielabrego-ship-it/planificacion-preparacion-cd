@@ -456,13 +456,111 @@ export async function getPicking(f: Filtros) {
   }
 }
 
+// ============ PRODUCTIVIDAD POR CIRCUITO/SECTOR (Tiempos E-8 / Productividad X Circuito) ============
+const r1 = (x: number) => Math.round(x * 10) / 10
+const r2 = (x: number) => Math.round(x * 100) / 100
+
+export async function getProdCirc(f: Filtros) {
+  const where = { fecha: rango(f) }
+  const [tot, sectores, filas, ops] = await Promise.all([
+    db.prodCircuito.aggregate({
+      where,
+      _count: true,
+      _min: { fecha: true },
+      _max: { fecha: true },
+      _sum: { soportes: true, lineas: true, bultos: true, tiempoTotal: true, tiempoMuerto: true, tiempoNeto: true, tiempoSuperNeto: true },
+    }),
+    db.prodCircuito.groupBy({
+      by: ['sector'],
+      where,
+      _sum: { soportes: true, bultos: true, tiempoTotal: true, tiempoMuerto: true, tiempoSuperNeto: true },
+    }),
+    db.prodCircuito.findMany({ where, select: { fecha: true, bultos: true, tiempoTotal: true, tiempoMuerto: true, tiempoSuperNeto: true } }),
+    db.prodCircuito.groupBy({
+      by: ['operario', 'nombre'],
+      where,
+      _sum: { bultos: true, soportes: true, tiempoTotal: true, tiempoMuerto: true, tiempoSuperNeto: true },
+    }),
+  ])
+
+  if (!tot._count) return { registros: 0, vacio: true as const }
+
+  const s = tot._sum
+  const kpis = {
+    registros: tot._count,
+    soportes: Math.round(s.soportes ?? 0),
+    lineas: Math.round(s.lineas ?? 0),
+    bultos: Math.round(s.bultos ?? 0),
+    horasTotal: r1(s.tiempoTotal ?? 0),
+    horasMuerto: r1(s.tiempoMuerto ?? 0),
+    horasNeto: r1(s.tiempoNeto ?? 0),
+    pctMuerto: s.tiempoTotal ? r1(((s.tiempoMuerto ?? 0) / s.tiempoTotal) * 100) : null,
+    prodTotal: s.tiempoTotal ? r2((s.bultos ?? 0) / s.tiempoTotal) : null,
+    prodNeto: s.tiempoNeto ? r2((s.bultos ?? 0) / s.tiempoNeto) : null,
+    prodSuperNeto: s.tiempoSuperNeto ? r2((s.bultos ?? 0) / s.tiempoSuperNeto) : null,
+  }
+
+  const porSector = sectores
+    .map((x) => ({
+      sector: x.sector || '(sin sector)',
+      soportes: Math.round(x._sum.soportes ?? 0),
+      bultos: Math.round(x._sum.bultos ?? 0),
+      pctMuerto: x._sum.tiempoTotal ? r1(((x._sum.tiempoMuerto ?? 0) / x._sum.tiempoTotal) * 100) : null,
+      prodSuperNeto: x._sum.tiempoSuperNeto && x._sum.tiempoSuperNeto > 0 ? r2((x._sum.bultos ?? 0) / x._sum.tiempoSuperNeto) : null,
+    }))
+    .sort((a, b) => b.bultos - a.bultos)
+
+  // serie mensual
+  const porMesMap = new Map<string, { bultos: number; tiempoTotal: number; tiempoMuerto: number; tiempoSuperNeto: number }>()
+  for (const r of filas) {
+    const k = dia(r.fecha).slice(0, 7)
+    let m = porMesMap.get(k)
+    if (!m) { m = { bultos: 0, tiempoTotal: 0, tiempoMuerto: 0, tiempoSuperNeto: 0 }; porMesMap.set(k, m) }
+    m.bultos += r.bultos ?? 0
+    m.tiempoTotal += r.tiempoTotal ?? 0
+    m.tiempoMuerto += r.tiempoMuerto ?? 0
+    m.tiempoSuperNeto += r.tiempoSuperNeto ?? 0
+  }
+  const porMes = [...porMesMap.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([mes, m]) => ({
+    mes,
+    bultos: Math.round(m.bultos),
+    pctMuerto: m.tiempoTotal ? r1((m.tiempoMuerto / m.tiempoTotal) * 100) : null,
+    prodSuperNeto: m.tiempoSuperNeto > 0 ? r2(m.bultos / m.tiempoSuperNeto) : null,
+  }))
+
+  const operariosTop = ops
+    .map((x) => ({
+      operario: x.operario,
+      nombre: x.nombre || x.operario,
+      bultos: Math.round(x._sum.bultos ?? 0),
+      soportes: Math.round(x._sum.soportes ?? 0),
+      horasTotal: r1(x._sum.tiempoTotal ?? 0),
+      pctMuerto: x._sum.tiempoTotal ? r1(((x._sum.tiempoMuerto ?? 0) / x._sum.tiempoTotal) * 100) : null,
+      prodSuperNeto: x._sum.tiempoSuperNeto && x._sum.tiempoSuperNeto > 0 ? r2((x._sum.bultos ?? 0) / x._sum.tiempoSuperNeto) : null,
+    }))
+    .sort((a, b) => b.bultos - a.bultos)
+    .slice(0, 15)
+
+  return {
+    registros: tot._count,
+    vacio: false as const,
+    desde: tot._min.fecha ? dia(tot._min.fecha) : undefined,
+    hasta: tot._max.fecha ? dia(tot._max.fecha) : undefined,
+    kpis,
+    porSector,
+    porMes,
+    operariosTop,
+  }
+}
+
 // ============ STATUS ============
 export async function getStatus() {
-  const [ola, h61, tm, pk, batches] = await Promise.all([
+  const [ola, h61, tm, pk, pc, batches] = await Promise.all([
     db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.tiempoMuerto.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.pickingEvento.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    db.prodCircuito.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.uploadBatch.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
   ])
   return {
@@ -470,6 +568,7 @@ export async function getStatus() {
     h61: { registros: h61._count, desde: h61._min.fecha, hasta: h61._max.fecha },
     tm: { registros: tm._count, desde: tm._min.fecha, hasta: tm._max.fecha },
     picking: { registros: pk._count, desde: pk._min.fecha, hasta: pk._max.fecha },
+    prodcirc: { registros: pc._count, desde: pc._min.fecha, hasta: pc._max.fecha },
     batches: batches.map((b) => ({ ...b, createdAt: b.createdAt.toISOString() })),
   }
 }

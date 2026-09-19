@@ -13,8 +13,9 @@ export const maxDuration = 300
 const PATRONES: Record<TipoCarga, RegExp> = {
   ola: /ola/i,
   h61: /h61/i,
-  tm: /(tiempos|muertos|tm)/i,
+  tm: /(muertos|tm)/i,
   picking: /(picking|pick)/i,
+  prodcirc: /(circuito|productividad|tiempos|e-?\d)/i,
 }
 
 export async function POST(req: NextRequest) {

@@ -6,7 +6,7 @@ import { workbookARecords } from '@/lib/xlsx'
 export const runtime = 'nodejs'
 export const maxDuration = 300
 
-const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking']
+const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking', 'prodcirc']
 
 export async function POST(req: NextRequest) {
   try {
