@@ -164,3 +164,13 @@ model UploadBatch {
   meta      String?
   createdAt DateTime @default(now())
 }
+
+// Partes de una subida por chunks (archivos grandes desde la web; Vercel limita cada request a ~4,5 MB)
+model UploadChunk {
+  id        String   @id @default(cuid())
+  fileId    String
+  idx       Int
+  data      String
+  createdAt DateTime @default(now())
+  @@unique([fileId, idx])
+}

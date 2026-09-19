@@ -23,11 +23,44 @@ interface StatusData {
 
 const TARJETAS = [
   { tipo: 'ola', titulo: 'Ola y Pendiente', desc: 'Bultos a preparar por día (matriz mensual). Archivo: “Ola y Pendiente (1).xlsx”', color: 'bg-emerald-100 text-emerald-800' },
-  { tipo: 'h61', titulo: 'H61 — Preparación por hora', desc: 'Producción por hora de cada colaborador (8 h vs 12 h/extras). Archivo: “H61.xlsx” (grande: recomendada la vía Python o seed del servidor)', color: 'bg-teal-100 text-teal-800' },
+  { tipo: 'h61', titulo: 'H61 — Preparación por hora', desc: 'Producción por hora de cada colaborador (8 h vs 12 h/extras + actividad). Se sube por partes automáticamente, sin límite de tamaño', color: 'bg-teal-100 text-teal-800' },
   { tipo: 'tm', titulo: 'Tiempos muertos', desc: 'Eventos con motivo y observación; se agrupan automáticamente (APRO, NAVE, PASILLO, UBICACIÓN…). Archivo: “tiempos muertos pasado.xlsx”', color: 'bg-amber-100 text-amber-800' },
-  { tipo: 'picking', titulo: 'Producción por picking', desc: 'Log de picking para estimar tiempo muerto entre pickings y entre soportes. Es el archivo que excede el chat: cargar con el script Python', color: 'bg-rose-100 text-rose-800' },
+  { tipo: 'picking', titulo: 'Producción por picking', desc: 'Log de picking para estimar tiempo muerto entre pickings y entre soportes. Archivo grande: se sube por partes automáticamente', color: 'bg-rose-100 text-rose-800' },
   { tipo: 'prodcirc', titulo: 'Productividad X Circuito', desc: 'Tiempos (total/muerto/neto/super neto) y producción por colaborador, sector, día y turno. Archivos: “Productividad X Circuito…”, “Tiempos E-8…” (se acumulan, no se reemplazan)', color: 'bg-indigo-100 text-indigo-800' },
 ]
+
+const TAM_PARTE = 2 * 1024 * 1024 // 2 MB crudos por parte (~2,7 MB en base64, bajo el límite de Vercel)
+
+function aBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf)
+  let bin = ''
+  const paso = 0x8000
+  for (let i = 0; i < bytes.length; i += paso) {
+    bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + paso)))
+  }
+  return btoa(bin)
+}
+
+async function postConReintentos(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  let ultimo: Error | null = null
+  for (let intento = 0; intento < 3; intento++) {
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+      if (r.ok && !j.error) return j
+      const msg = String(j.error ?? `Error HTTP ${r.status} al procesar el archivo`)
+      // 4xx (salvo 408/429) = error definitivo del request: no reintentar
+      const definitivo = r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429
+      if (definitivo) throw Object.assign(new Error(msg), { noReintentar: true })
+      ultimo = new Error(msg)
+    } catch (e) {
+      if (e && typeof e === 'object' && (e as { noReintentar?: boolean }).noReintentar) throw e
+      ultimo = e as Error
+    }
+    await new Promise((res) => setTimeout(res, 1500))
+  }
+  throw ultimo ?? new Error('Error de red al subir la parte')
+}
 
 export function CargaDatosTab() {
   const [subiendo, setSubiendo] = useState<string | null>(null)
@@ -48,12 +81,19 @@ export function CargaDatosTab() {
     setSubiendo(tipo)
     setRes((r) => ({ ...r, [tipo]: '' }))
     try {
-      const fd = new FormData()
-      fd.append('tipo', tipo)
-      fd.append('file', file)
-      const r = await fetch('/api/upload', { method: 'POST', body: fd })
-      const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
-      if (!r.ok || j.error) throw new Error(String(j.error ?? `Error HTTP ${r.status} al procesar el archivo`))
+      const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const total = Math.max(1, Math.ceil(file.size / TAM_PARTE))
+      let j: Record<string, unknown> = {}
+      for (let i = 0; i < total; i++) {
+        setRes((r) => ({ ...r, [tipo]: i === 0 ? 'Subiendo…' : `Subiendo parte ${i + 1}/${total}…` }))
+        const data = aBase64(await file.slice(i * TAM_PARTE, (i + 1) * TAM_PARTE).arrayBuffer())
+        j = await postConReintentos({ modo: 'chunk', tipo, fileId, nombre: file.name, i, total, data })
+        const recibidos = Number(j.recibidos ?? i + 1)
+        if (total > 1) setRes((r) => ({ ...r, [tipo]: j.fase === 'chunk' ? `Partes ${recibidos}/${total} recibidas…` : 'Procesando en el servidor…' }))
+      }
+      if (j.fase !== 'procesado' && !('insertados' in j)) {
+        throw new Error('el servidor no terminó de procesar el archivo; probá de nuevo')
+      }
       setRes((prev) => ({ ...prev, [tipo]: `OK: ${n(j.insertados as number | null)} filas procesadas (${j.desde ?? ''} → ${j.hasta ?? ''})` }))
       toast({ title: `Carga de ${tipo} completada`, description: `${n(j.insertados as number | null)} filas` })
       qc.invalidateQueries()
@@ -81,7 +121,7 @@ export function CargaDatosTab() {
         <AlertTitle>Carga de archivos Excel</AlertTitle>
         <AlertDescription>
           Cada carga <b>reemplaza</b> los datos previos de ese tipo. Las fechas se detectan automáticamente.
-          Para el H61 (26 MB) y el archivo de picking (excede el chat) usá la vía del script Python, que también sirve en producción (Vercel tiene límite de ~4,5 MB por request).
+          Los archivos grandes (ej. H61 de ~26 MB) se suben <b>por partes</b> automáticamente — no hay límite de tamaño desde la web.
         </AlertDescription>
       </Alert>
 
@@ -131,10 +171,10 @@ export function CargaDatosTab() {
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2"><Terminal className="h-4 w-4" /> Cargar el archivo grande con Python</CardTitle>
+          <CardTitle className="text-base flex items-center gap-2"><Terminal className="h-4 w-4" /> Alternativa: cargar con el script Python</CardTitle>
           <CardDescription>
-            Para el archivo de producción por picking (y también H61), usá el script <code className="rounded bg-muted px-1">subir_archivo.py</code> del repositorio.
-            Lee el Excel/CSV, detecta las columnas y envía los datos por lotes a la API — sin límite de tamaño.
+            La web ya acepta archivos grandes por partes, pero si preferís el script <code className="rounded bg-muted px-1">subir_archivo.py</code> del repositorio también funciona:
+            lee el Excel/CSV, detecta las columnas y envía los datos por lotes a la API.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
