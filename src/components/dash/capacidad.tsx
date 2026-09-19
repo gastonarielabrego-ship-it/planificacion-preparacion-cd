@@ -6,7 +6,7 @@
 
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Gauge, Hourglass, Layers, Users, CalendarOff } from 'lucide-react'
+import { Gauge, Hourglass, Layers, Users, CalendarOff, TrendingUp, TrendingDown } from 'lucide-react'
 import { Kpi, SinDatos } from './kpi'
 import { fetchDatos, n, n1, pct, fechaCorta, COLORES } from '@/lib/client'
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts'
@@ -62,6 +62,46 @@ interface CapacidadData {
     pctExtrasTotal: number
   } | null
   tieneOpHora: boolean
+  comparativa: {
+    normal: { dias: number; bultosPorDia: number; personasPorDia: number; horasPorDia: number; ritmo: number | null }
+    feriado: { dias: number; bultosPorJornada: number; personasPorJornada: number; horasPorJornada: number; ritmo: number | null }
+    deltas: { bultosPct: number | null; personasPct: number | null; horasPct: number | null; ritmoPct: number | null }
+    perfilHora: { hora: number; etiqueta: string; bultosNormal: number; personasNormal: number; ritmoNormal: number | null; bultosFeriado: number; personasFeriado: number; ritmoFeriado: number | null }[]
+    diasNormalesPerfil: number
+    diasFeriadoPerfil: number
+  } | null
+}
+
+// Caja de comparación: valor de un día normal contra el de una jornada feriada
+function CajaComparativa({ titulo, normal, feriado, delta, unidad, decimales }: {
+  titulo: string
+  normal: number | null
+  feriado: number | null
+  delta: number | null
+  unidad?: string
+  decimales?: boolean
+}) {
+  const fmtV = (v: number | null) => (decimales ? n1(v) : n(v))
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <p className="text-xs text-muted-foreground">{titulo}</p>
+      <div className="flex items-end gap-3">
+        <div>
+          <p className="text-[11px] font-medium text-emerald-700">Día normal</p>
+          <p className="text-xl font-bold tabular-nums">{fmtV(normal)}<span className="text-xs font-normal text-muted-foreground"> {unidad}</span></p>
+        </div>
+        <div className="border-l pl-3">
+          <p className="text-[11px] font-medium text-red-700">Feriado</p>
+          <p className="text-xl font-bold tabular-nums text-red-700">{fmtV(feriado)}<span className="text-xs font-normal text-muted-foreground"> {unidad}</span></p>
+        </div>
+      </div>
+      {delta !== null && (
+        <Badge variant="outline" className={delta >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}>
+          {delta >= 0 ? '+' : ''}{n1(delta)}% vs día normal
+        </Badge>
+      )}
+    </div>
+  )
 }
 
 const MESES_ABR = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -75,6 +115,21 @@ export function CapacidadTab() {
   const resumen = data?.resumen ?? null
   const filas = useMemo(() => (mes === 'todos' ? data?.porMes ?? [] : (data?.porMes ?? []).filter((m) => m.mes === mes)), [data, mes])
   const feriadosConActividad = useMemo(() => (mes === 'todos' ? data?.feriados ?? [] : (data?.feriados ?? []).filter((f) => f.fecha.startsWith(mes))), [data, mes])
+  const comp = data?.comparativa ?? null
+
+  // Ranking de días (respeta el filtro de mes): vs promedio de un día normal del período
+  const ranking = useMemo(() => {
+    const base = (data?.serie ?? [])
+      .filter((s) => s.bultos > 0 && (mes === 'todos' || s.fecha.startsWith(mes)))
+      .map((s) => ({
+        ...s,
+        vsProm: comp && comp.normal.bultosPorDia > 0 ? Math.round(((s.bultos - comp.normal.bultosPorDia) / comp.normal.bultosPorDia) * 100) : null,
+      }))
+    const top = [...base].sort((a, b) => b.bultos - a.bultos).slice(0, 8)
+    const bottom = [...base].sort((a, b) => a.bultos - b.bultos).slice(0, 8)
+    return { top, bottom }
+  }, [data, mes, comp])
+  const perfilComp = useMemo(() => (comp?.perfilHora ?? []).filter((p) => p.bultosNormal > 0 || p.bultosFeriado > 0 || p.personasNormal > 0 || p.personasFeriado > 0), [comp])
 
   // Perfil por hora: promedio de colaboradores por hora (jornada vs extras) + bultos promedio
   const perfil = useMemo(() => (data?.perfilHora ?? []).filter((p) => p.opsJornada > 0 || p.opsExtras > 0), [data])
@@ -246,6 +301,88 @@ export function CapacidadTab() {
           )}
         </CardContent>
       </Card>
+
+      {/* Feriado vs día normal: comparativa de producción */}
+      {comp && comp.normal.dias > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-base flex items-center gap-2"><CalendarOff className="h-4 w-4 text-red-600" /> Feriado vs día normal: ¿cómo se compara la producción?</CardTitle>
+              <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">mediciones separadas</Badge>
+            </div>
+            <CardDescription>
+              La jornada feriada completa (noche TN previa + diurnos del feriado) contra el día normal promedio.
+              {comp.feriado.dias > 0 ? (
+                <> Un feriado típico produce <b>{n(comp.feriado.bultosPorJornada)}</b> bultos con <b>{n1(comp.feriado.personasPorJornada)}</b> personas y un ritmo de <b>{n1(comp.feriado.ritmo)}</b> bultos/h, frente a <b>{n(comp.normal.bultosPorDia)}</b> bultos, <b>{n1(comp.normal.personasPorDia)}</b> personas y <b>{n1(comp.normal.ritmo)}</b> bultos/h de un día normal</>
+              ) : (
+                <> Aún no hay producción en feriados en el período analizado</>
+              )}
+              {mes !== 'todos' && '. Las cajas y el perfil horario usan todo el período; los rankings respetan el filtro de mes'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <CajaComparativa titulo="Bultos por jornada" normal={comp.normal.bultosPorDia} feriado={comp.feriado.bultosPorJornada} delta={comp.deltas.bultosPct} />
+              <CajaComparativa titulo="Personas por jornada" normal={comp.normal.personasPorDia} feriado={comp.feriado.personasPorJornada} delta={comp.deltas.personasPct} decimales />
+              <CajaComparativa titulo="Horas-hombre por jornada" normal={comp.normal.horasPorDia} feriado={comp.feriado.horasPorJornada} delta={comp.deltas.horasPct} unidad="h" />
+              <CajaComparativa titulo="Ritmo (bultos por hora-hombre)" normal={comp.normal.ritmo} feriado={comp.feriado.ritmo} delta={comp.deltas.ritmoPct} decimales />
+            </div>
+
+            {/* Productividad por hora: normal vs feriado */}
+            <div>
+              <p className="text-sm font-medium mb-1">Productividad de cada hora — días normales vs feriados</p>
+              <p className="text-xs text-muted-foreground mb-2">Bultos promedio de cada hora (barras, promediando {comp.diasNormalesPerfil} días normales{comp.diasFeriadoPerfil > 0 ? ` contra ${comp.diasFeriadoPerfil} jornadas feriadas` : ''}) y ritmo de esa hora (bultos por persona activa, línea).</p>
+              <ResponsiveContainer width="100%" height={320}>
+                <ComposedChart data={perfilComp} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={1} />
+                  <YAxis yAxisId="b" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                  <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar yAxisId="b" dataKey="bultosNormal" name="Bultos/hora — día normal" fill={COLORES[0]} radius={[2, 2, 0, 0]} />
+                  {comp.diasFeriadoPerfil > 0 && <Bar yAxisId="b" dataKey="bultosFeriado" name="Bultos/hora — feriado" fill={COLORES[2]} radius={[2, 2, 0, 0]} />}
+                  <Line yAxisId="r" dataKey="ritmoNormal" name="Ritmo por hora — normal" stroke={COLORES[3]} strokeWidth={2} dot={false} />
+                  {comp.diasFeriadoPerfil > 0 && <Line yAxisId="r" dataKey="ritmoFeriado" name="Ritmo por hora — feriado" stroke={COLORES[2]} strokeWidth={2} strokeDasharray="4 3" dot={false} />}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Rankings: días que más se producen / días que decaen */}
+            <div className="grid gap-4 lg:grid-cols-2">
+              {([
+                { titulo: 'Los días que más se producen', icono: TrendingUp, filas: ranking.top, tono: 'text-emerald-700' },
+                { titulo: 'Los días que decaen', icono: TrendingDown, filas: ranking.bottom, tono: 'text-red-700' },
+              ]).map((bloque) => (
+                <div key={bloque.titulo} className="rounded-lg border overflow-hidden">
+                  <p className={`text-sm font-medium flex items-center gap-2 px-3 py-2 border-b bg-muted/40 ${bloque.tono}`}>
+                    <bloque.icono className="h-4 w-4" /> {bloque.titulo}
+                  </p>
+                  <Table>
+                    <TableBody>
+                      {bloque.filas.map((s) => (
+                        <TableRow key={s.fecha} className={s.esFeriado || s.bultosFeriado > 0 ? 'bg-red-50/60' : undefined}>
+                          <TableCell className="font-medium whitespace-nowrap">
+                            {fechaCorta(s.fecha)}
+                            {s.esFeriado && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100" title={s.feriado ?? undefined}>feriado</Badge>}
+                            {!s.esFeriado && s.bultosFeriado > 0 && <Badge variant="outline" className="ml-1 border-red-200 bg-red-50 text-red-700" title={`Noche TN que antecede a ${s.feriadoManana ?? 'feriado'}`}>noche TN</Badge>}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{n(s.bultos)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{s.ops} pers.</TableCell>
+                          <TableCell className={`text-right tabular-nums font-semibold ${s.vsProm === null ? '' : s.vsProm >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                            {s.vsProm === null ? '—' : `${s.vsProm >= 0 ? '+' : ''}${s.vsProm}%`}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">La tercera columna compara los bultos del día contra el promedio de un día normal del período ({n(comp.normal.bultosPorDia)} bultos). Las vísperas con noche TN feriada se marcan en rojo aunque el día en sí no sea feriado.</p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Preparación por turno */}
       <Card>

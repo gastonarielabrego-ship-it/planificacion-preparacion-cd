@@ -326,11 +326,12 @@ function mediana(vals: number[]): number {
 }
 
 export async function getCapacidad(f: Filtros) {
-  const [ops, oh] = await Promise.all([
+  const [ops, oh, th] = await Promise.all([
     db.h61OpDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } }),
     db.h61OpHora.findMany({ where: { fecha: rango(f) } }),
+    db.h61TurnoHora.findMany({ where: { fecha: rango(f) } }),
   ])
-  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, feriados: [], tieneOpHora: oh.length > 0 }
+  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, feriados: [], comparativa: null, tieneOpHora: oh.length > 0 }
 
   // --- feriados argentinos (se sincronizan on-demand desde api.argentinadatos.com.ar) ---
   const anios = new Set<number>()
@@ -583,6 +584,97 @@ export async function getCapacidad(f: Filtros) {
     ritmo: v.horas ? +(v.bultos / v.horas).toFixed(1) : null,
   }))
 
+  // --- comparativa feriado vs día normal ---
+  // Promedios por jornada: medición normal (días no feriados) contra jornadas feriadas
+  // completas (diurnos del feriado + noche TN previa, ya reunidas en feriadosDetalle).
+  const diasNormalesComp = serie.filter((s) => s.opDiasNormales > 0)
+  const bultosNormTot = diasNormalesComp.reduce((a, s) => a + s.bultosNormales, 0)
+  const horasNormTot = diasNormalesComp.reduce((a, s) => a + s.horasNormales, 0)
+  const personasNormDia = diasNormalesComp.reduce((a, s) => a + (opsPorDia.get(s.fecha)?.opsNormales.size ?? 0), 0)
+  const promedio = (tot: number, dias: number) => (dias ? tot / dias : 0)
+  const deltaPct = (fer: number, nor: number): number | null => (nor > 0 && feriadosDetalle.length ? +(((fer - nor) / nor) * 100).toFixed(1) : null)
+  const bultosFerTot = feriadosDetalle.reduce((a, f) => a + f.bultos, 0)
+  const horasFerTot = feriadosDetalle.reduce((a, f) => a + f.horas, 0)
+  const personasFerDia = feriadosDetalle.reduce((a, f) => a + f.personas, 0)
+  const ritmoNormalComp = horasNormTot ? bultosNormTot / horasNormTot : null
+  const ritmoFerComp = horasFerTot ? bultosFerTot / horasFerTot : null
+
+  // Perfil horario por tipo de día (H61TurnoHora está disponible aunque falte el
+  // detalle operario×hora). Cada registro se clasifica por su propio turno con la
+  // misma regla de feriados: M/T -> su fecha; N -> la fecha siguiente.
+  // En días normales las horas 0-5 del TN ocurren el día calendario siguiente.
+  type PerfTipo = { bultos: number; personas: number; fechas: Set<string> }
+  const acumulador = (): PerfTipo[] => Array.from({ length: 24 }, () => ({ bultos: 0, personas: 0, fechas: new Set<string>() }))
+  const perfNormal = acumulador()
+  const perfFeriado = acumulador()
+  const sumarPerfil = (p: PerfTipo[], hora: number, bultos: number, operarios: number, fechaClave: string) => {
+    const slot = p[hora]
+    if (!slot) return
+    slot.bultos += bultos
+    slot.personas += operarios
+    slot.fechas.add(fechaClave)
+  }
+  for (const r of th) {
+    const ref = feriadoRefDe(r.fecha, r.turno)
+    if (ref) {
+      // jornada feriada: la noche TN completa (23 + 0-5) y los diurnos pertenecen al feriado
+      sumarPerfil(perfFeriado, r.hora, r.bultos, r.operarios, ref)
+    } else if (r.turno === 'N' && r.hora <= 5) {
+      // madrugada de un día normal: el TN la registró con la fecha de inicio del turno
+      const base = new Date(r.fecha)
+      base.setUTCDate(base.getUTCDate() + 1)
+      sumarPerfil(perfNormal, r.hora, r.bultos, r.operarios, dia(base))
+    } else {
+      sumarPerfil(perfNormal, r.hora, r.bultos, r.operarios, dia(r.fecha))
+    }
+  }
+  const fechasNormalPerfil = new Set(perfNormal.flatMap((p) => [...p.fechas]))
+  const fechasFeriadoPerfil = new Set(perfFeriado.flatMap((p) => [...p.fechas]))
+  const perfilComparativa = Array.from({ length: 24 }, (_, hora) => {
+    const nN = fechasNormalPerfil.size
+    const nF = fechasFeriadoPerfil.size
+    const bN = promedio(perfNormal[hora].bultos, nN)
+    const pN = promedio(perfNormal[hora].personas, nN)
+    const bF = promedio(perfFeriado[hora].bultos, nF)
+    const pF = promedio(perfFeriado[hora].personas, nF)
+    return {
+      hora,
+      etiqueta: `${String(hora).padStart(2, '0')}:00`,
+      bultosNormal: Math.round(bN),
+      personasNormal: +pN.toFixed(1),
+      ritmoNormal: pN >= 0.1 ? +(bN / pN).toFixed(1) : null,
+      bultosFeriado: Math.round(bF),
+      personasFeriado: +pF.toFixed(1),
+      ritmoFeriado: pF >= 0.1 ? +(bF / pF).toFixed(1) : null,
+    }
+  })
+
+  const comparativa = {
+    normal: {
+      dias: diasNormalesComp.length,
+      bultosPorDia: Math.round(promedio(bultosNormTot, diasNormalesComp.length)),
+      personasPorDia: +promedio(personasNormDia, diasNormalesComp.length).toFixed(1),
+      horasPorDia: Math.round(promedio(horasNormTot, diasNormalesComp.length)),
+      ritmo: ritmoNormalComp !== null ? +ritmoNormalComp.toFixed(1) : null,
+    },
+    feriado: {
+      dias: feriadosDetalle.length,
+      bultosPorJornada: Math.round(promedio(bultosFerTot, feriadosDetalle.length)),
+      personasPorJornada: +promedio(personasFerDia, feriadosDetalle.length).toFixed(1),
+      horasPorJornada: Math.round(promedio(horasFerTot, feriadosDetalle.length)),
+      ritmo: ritmoFerComp !== null ? +ritmoFerComp.toFixed(1) : null,
+    },
+    deltas: {
+      bultosPct: deltaPct(bultosFerTot / Math.max(1, feriadosDetalle.length), bultosNormTot / Math.max(1, diasNormalesComp.length)),
+      personasPct: deltaPct(personasFerDia / Math.max(1, feriadosDetalle.length), personasNormDia / Math.max(1, diasNormalesComp.length)),
+      horasPct: deltaPct(horasFerTot / Math.max(1, feriadosDetalle.length), horasNormTot / Math.max(1, diasNormalesComp.length)),
+      ritmoPct: ritmoNormalComp && ritmoFerComp ? +(((ritmoFerComp - ritmoNormalComp) / ritmoNormalComp) * 100).toFixed(1) : null,
+    },
+    perfilHora: perfilComparativa,
+    diasNormalesPerfil: fechasNormalPerfil.size,
+    diasFeriadoPerfil: fechasFeriadoPerfil.size,
+  }
+
   // --- resumen del periodo filtrado (medición normal = solo op-días no feriados) ---
   const normales = serie.filter((s) => s.opDiasNormales > 0)
   const bultos = normales.reduce((a, s) => a + s.bultosNormales, 0)
@@ -621,7 +713,7 @@ export async function getCapacidad(f: Filtros) {
     pctExtrasTotal: bultos + bultosFeriado ? +(((bultosExtras + bultosFeriado) / (bultos + bultosFeriado)) * 100).toFixed(1) : 0,
   }
 
-  return { serie, porMes, porTurno, perfilHora, resumen, feriados: feriadosDetalle, tieneOpHora: oh.length > 0 }
+  return { serie, porMes, porTurno, perfilHora, resumen, feriados: feriadosDetalle, comparativa, tieneOpHora: oh.length > 0 }
 }
 
 // ============ TIEMPOS MUERTOS ============
