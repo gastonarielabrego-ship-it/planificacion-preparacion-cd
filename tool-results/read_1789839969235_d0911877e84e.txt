@@ -1,0 +1,841 @@
+     1→// Agregaciones server-side para los modulos del dashboard.
+     2→// Los volumenes (H61 ~39k op-dias, TM ~12k, Ola ~1k, Picking <=1M) se procesan en memoria.
+     3→import { db } from '@/lib/db'
+     4→import { getFeriadosMap } from './feriados'
+     5→
+     6→export interface Filtros {
+     7→  from?: string
+     8→  to?: string
+     9→  turno?: string
+    10→  funcion?: string
+    11→}
+    12→
+    13→function rango(f: Filtros): { gte?: Date; lte?: Date } {
+    14→  const r: { gte?: Date; lte?: Date } = {}
+    15→  if (f.from) r.gte = new Date(f.from + 'T00:00:00.000Z')
+    16→  if (f.to) r.lte = new Date(f.to + 'T23:59:59.999Z')
+    17→  return r
+    18→}
+    19→const dia = (d: Date) => d.toISOString().slice(0, 10)
+    20→
+    21→// ============ RESUMEN EJECUTIVO ============
+    22→export async function getResumen() {
+    23→  const [olaCount, h61Count, tmCount, pickCount, batches] = await Promise.all([
+    24→    db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _avg: { ola: true, total: true } }),
+    25→    db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _sum: { bultos: true, horasActivas: true, extras: true, bultosExtras: true } }),
+    26→    db.tiempoMuerto.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _sum: { minutos: true, minutosEf: true } }),
+    27→    db.pickingEvento.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    28→    db.uploadBatch.findMany({ orderBy: { createdAt: 'desc' }, take: 10 }),
+    29→  ])
+    30→
+    31→  const opsUnicos = await db.h61OpDia.findMany({ select: { operario: true }, distinct: ['operario'] })
+    32→
+    33→  // top categorias TM (excluye bajas ESTADO B; OR con null es clave: NOT excludes NULLs en SQL)
+    34→  const tmCats = await db.tiempoMuerto.groupBy({
+    35→    by: ['categoria'],
+    36→    _sum: { minutosEf: true },
+    37→    _count: true,
+    38→    where: { OR: [{ estado: null }, { estado: { not: 'B' } }] },
+    39→    orderBy: { _sum: { minutosEf: 'desc' } },
+    40→  })
+    41→
+    42→  const horasTotales = h61Count._sum.horasActivas ?? 0
+    43→  const bultos = h61Count._sum.bultos ?? 0
+    44→  const bultosExtras = h61Count._sum.bultosExtras ?? 0
+    45→  const totalMinTM = tmCats.reduce((a, c) => a + (c._sum.minutosEf ?? 0), 0)
+    46→
+    47→  return {
+    48→    datasets: {
+    49→      ola: { registros: olaCount._count, desde: olaCount._min.fecha, hasta: olaCount._max.fecha, olaMedia: Math.round(olaCount._avg.ola ?? 0), totalMedia: Math.round(olaCount._avg.total ?? 0) },
+    50→      h61: { registros: h61Count._count, desde: h61Count._min.fecha, hasta: h61Count._max.fecha, bultos, horas: horasTotales, productividad: horasTotales ? +(bultos / horasTotales).toFixed(1) : 0, operarios: opsUnicos.length, extrasHoras: h61Count._sum.extras ?? 0, bultosExtras, pctBultosExtras: bultos ? +((bultosExtras / bultos) * 100).toFixed(1) : 0 },
+    51→      tm: { registros: tmCount._count, desde: tmCount._min.fecha, hasta: tmCount._max.fecha, minutos: totalMinTM, horas: +(totalMinTM / 60).toFixed(0), pctSobreHorasH61: horasTotales ? +(((totalMinTM / 60) / horasTotales) * 100).toFixed(1) : 0 },
+    52→      picking: { registros: pickCount._count, desde: pickCount._min.fecha, hasta: pickCount._max.fecha },
+    53→    },
+    54→    topCategoriasTM: tmCats.slice(0, 6).map((c) => ({ categoria: c.categoria, minutos: c._sum.minutosEf ?? 0, registros: c._count })),
+    55→    batches: batches.map((b) => ({ ...b, createdAt: b.createdAt.toISOString() })),
+    56→  }
+    57→}
+    58→
+    59→// ============ OLA / PLANIFICACION ============
+    60→export async function getPlanificacion(f: Filtros) {
+    61→  const where = { fecha: rango(f) }
+    62→  const [ola, h61] = await Promise.all([
+    63→    db.olaDia.findMany({ where, orderBy: { fecha: 'asc' } }),
+    64→    db.h61OpDia.findMany({ where: { fecha: rango(f) }, select: { fecha: true, operario: true, horasActivas: true, bultos: true, bultosBase: true, bultosExtras: true, extras: true, turno: true, funcion: true } }),
+    65→  ])
+    66→
+    67→  const porDia = new Map<string, { ops: number; opsExtras: number; horas: number; horasExtras: number; bultos: number; bultosBase: number; bultosExtras: number }>()
+    68→  for (const r of h61) {
+    69→    const k = dia(r.fecha)
+    70→    let p = porDia.get(k)
+    71→    if (!p) { p = { ops: 0, opsExtras: 0, horas: 0, horasExtras: 0, bultos: 0, bultosBase: 0, bultosExtras: 0 }; porDia.set(k, p) }
+    72→    p.ops += 1
+    73→    if (r.extras > 0) p.opsExtras += 1
+    74→    p.horas += r.horasActivas
+    75→    p.horasExtras += r.extras
+    76→    p.bultos += r.bultos
+    77→    p.bultosBase += r.bultosBase
+    78→    p.bultosExtras += r.bultosExtras
+    79→  }
+    80→
+    81→  const fechas = new Set<string>([...ola.map((o) => dia(o.fecha)), ...porDia.keys()])
+    82→  const serie = [...fechas].sort().map((k) => {
+    83→    const o = ola.find((x) => dia(x.fecha) === k)
+    84→    const p = porDia.get(k)
+    85→    const demanda = o?.total ?? null
+    86→    const prodHora = p && p.horas ? p.bultos / p.horas : null
+    87→    // capacidad si se suprimen extras: mantiene bultosBase (produccion en <=8h por operario)
+    88→    const faltanteSinExtras = p && demanda != null ? Math.max(0, demanda - p.bultosBase) : null
+    89→    return {
+    90→      fecha: k,
+    91→      ola: o?.ola ?? null,
+    92→      pendiente: o?.pendiente ?? null,
+    93→      demanda,
+    94→      preparado: p?.bultos ?? null,
+    95→      ops: p?.ops ?? null,
+    96→      opsExtras: p?.opsExtras ?? null,
+    97→      horas: p ? +p.horas.toFixed(1) : null,
+    98→      horasExtras: p?.horasExtras ?? 0,
+    99→      prodHora: prodHora != null ? +prodHora.toFixed(1) : null,
+   100→      bultosBase: p?.bultosBase ?? null,
+   101→      bultosExtras: p?.bultosExtras ?? null,
+   102→      faltanteSinExtras: faltanteSinExtras != null ? Math.round(faltanteSinExtras) : null,
+   103→    }
+   104→  })
+   105→
+   106→  // agregados por mes
+   107→  const porMes = new Map<string, { ola: number; demanda: number; preparado: number; dias: number; diasExtras: number; horasExtras: number; faltante: number }>()
+   108→  for (const s of serie) {
+   109→    const k = s.fecha.slice(0, 7)
+   110→    let m = porMes.get(k)
+   111→    if (!m) { m = { ola: 0, demanda: 0, preparado: 0, dias: 0, diasExtras: 0, horasExtras: 0, faltante: 0 }; porMes.set(k, m) }
+   112→    m.dias += 1
+   113→    if (s.demanda != null) m.demanda += s.demanda
+   114→    if (s.ola != null) m.ola += s.ola
+   115→    if (s.preparado != null) m.preparado += s.preparado
+   116→    if ((s.opsExtras ?? 0) > 0) m.diasExtras += 1
+   117→    m.horasExtras += s.horasExtras ?? 0
+   118→    if (s.faltanteSinExtras != null) m.faltante += s.faltanteSinExtras
+   119→  }
+   120→  const meses = [...porMes.entries()].sort().map(([mes, v]) => ({ mes, ...v }))
+   121→
+   122→  const conExtras = serie.filter((s) => (s.opsExtras ?? 0) > 0)
+   123→  const resumen = {
+   124→    dias: serie.length,
+   125→    diasConExtras: conExtras.length,
+   126→    pctDiasConExtras: serie.length ? +((conExtras.length / serie.length) * 100).toFixed(1) : 0,
+   127→    faltantePromedioSinExtras: conExtras.length ? Math.round(conExtras.reduce((a, s) => a + (s.faltanteSinExtras ?? 0), 0) / conExtras.length) : 0,
+   128→    faltanteTotalSinExtras: conExtras.reduce((a, s) => a + (s.faltanteSinExtras ?? 0), 0),
+   129→    horasExtrasTotales: serie.reduce((a, s) => a + (s.horasExtras ?? 0), 0),
+   130→    bultosExtrasTotales: serie.reduce((a, s) => a + (s.bultosExtras ?? 0), 0),
+   131→    prodHoraMedia: (() => {
+   132→      const vals = serie.filter((s) => s.prodHora != null && s.preparado != null && (s.preparado ?? 0) > 0)
+   133→      const totB = vals.reduce((a, s) => a + (s.preparado ?? 0), 0)
+   134→      const totH = vals.reduce((a, s) => a + (s.horas ?? 0), 0)
+   135→      return totH ? +(totB / totH).toFixed(1) : null
+   136→    })(),
+   137→  }
+   138→
+   139→  return { serie, meses, resumen }
+   140→}
+   141→
+   142→// ============ OLA (analisis exclusivo de ola y pendientes) ============
+   143→// Serie diaria cruda + lunes de cada semana ISO. Los agregados (mes/semana/dia de
+   144→// semana, promedio y mediana) se recalculan en el cliente para que los filtros
+   145→// mensual/semanal/diario sean consistentes entre si.
+   146→const DIAS_SEM = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+   147→
+   148→export async function getOla(f: Filtros) {
+   149→  const rows = await db.olaDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } })
+   150→  const serie = rows.map((r) => {
+   151→    const k = dia(r.fecha)
+   152→    const d = new Date(k + 'T00:00:00.000Z')
+   153→    const dow = d.getUTCDay() // 0=domingo
+   154→    const lun = new Date(d)
+   155→    lun.setUTCDate(lun.getUTCDate() - ((dow + 6) % 7)) // lunes de la semana
+   156→    const ola = r.ola ?? 0
+   157→    const pendiente = r.pendiente ?? 0
+   158→    return {
+   159→      fecha: k,
+   160→      diaSemana: DIAS_SEM[dow],
+   161→      esFinde: dow === 0 || dow === 6,
+   162→      semana: lun.toISOString().slice(0, 10),
+   163→      ola,
+   164→      pendiente,
+   165→      total: ola + pendiente,
+   166→    }
+   167→  })
+   168→  return { serie }
+   169→}
+   170→
+   171→// ============ PRODUCTIVIDAD H61 ============
+   172→export async function getH61(f: Filtros) {
+   173→  const where: Record<string, unknown> = { fecha: rango(f) }
+   174→  if (f.turno) where.turno = f.turno
+   175→  if (f.funcion) where.funcion = f.funcion
+   176→
+   177→  const [ops, th, ci] = await Promise.all([
+   178→    db.h61OpDia.findMany({ where }),
+   179→    db.h61TurnoHora.findMany({ where: { fecha: rango(f) } }),
+   180→    db.h61Circuito.findMany({ where: { fecha: rango(f) } }),
+   181→  ])
+   182→
+   183→  // Perfil 24h: horas 0-5 del turno noche (N) pertenecen al dia calendario siguiente
+   184→  const porHora = Array.from({ length: 24 }, () => ({ bultos: 0, operarios: new Set<string>() }))
+   185→  const opSeen = new Map<string, Set<number>>() // fecha|op -> horas
+   186→  for (const r of th) {
+   187→    const fechaBase = new Date(r.fecha)
+   188→    const esNocheMadrugada = r.turno === 'N' && r.hora <= 5
+   189→    if (esNocheMadrugada) fechaBase.setUTCDate(fechaBase.getUTCDate() + 1)
+   190→    const h = porHora[r.hora]
+   191→    h.bultos += r.bultos
+   192→    const k = `${dia(fechaBase)}|${r.turno}`
+   193→    // operarios por hora aproximamos con el maximo informado ese dia-turno
+   194→    const set = opSeen.get(k) ?? new Set<number>()
+   195→    set.add(r.operarios)
+   196→    opSeen.set(k, set)
+   197→  }
+   198→  const perfilHora = porHora.map((h, i) => ({
+   199→    hora: i,
+   200→    etiqueta: `${String(i).padStart(2, '0')}:00`,
+   201→    bultos: h.bultos,
+   202→    operariosProm: (() => {
+   203→      const vals = [...opSeen.values()].map((s) => Math.max(...s))
+   204→      return vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : 0
+   205→    })(),
+   206→  }))
+   207→  const horasConDatos = perfilHora.filter((p) => p.bultos > 0)
+   208→  const pico = horasConDatos.reduce((a, b) => (b.bultos > a.bultos ? b : a), horasConDatos[0] ?? { hora: 0, etiqueta: '-', bultos: 0, operariosProm: 0 })
+   209→  const valle = horasConDatos.reduce((a, b) => (b.bultos < a.bultos ? b : a), horasConDatos[0] ?? { hora: 0, etiqueta: '-', bultos: 0, operariosProm: 0 })
+   210→
+   211→  // por turno
+   212→  const turnoAgg = new Map<string, { bultos: number; horas: number; opsDias: number; bultosExtras: number }>()
+   213→  for (const r of th) {
+   214→    let t = turnoAgg.get(r.turno)
+   215→    if (!t) { t = { bultos: 0, horas: 0, opsDias: 0, bultosExtras: 0 }; turnoAgg.set(r.turno, t) }
+   216→    t.bultos += r.bultos
+   217→  }
+   218→  const turnoHoras = new Map<string, Set<string>>()
+   219→  for (const r of ops) {
+   220→    let t = turnoHoras.get(r.turno)
+   221→    if (!t) { t = new Set(); turnoHoras.set(r.turno, t) }
+   222→    t.add(`${dia(r.fecha)}|${r.operario}`)
+   223→    t.add(`${dia(r.fecha)}|${r.operario}|h|${r.horasActivas}`)
+   224→  }
+   225→  for (const [turno, set] of turnoHoras) {
+   226→    const horas = [...set].filter((x) => x.includes('|h|')).reduce((a, x) => a + parseInt(x.split('|h|')[1], 10), 0)
+   227→    const opsDias = [...set].filter((x) => !x.includes('|h|')).length
+   228→    const t = turnoAgg.get(turno)
+   229→    if (t) { t.horas = horas; t.opsDias = opsDias }
+   230→  }
+   231→  for (const r of ops) {
+   232→    const t = turnoAgg.get(r.turno)
+   233→    if (t) t.bultosExtras += r.bultosExtras
+   234→  }
+   235→  const porTurno = [...turnoAgg.entries()].map(([turno, v]) => ({
+   236→    turno,
+   237→    nombre: turno === 'M' ? 'Mañana' : turno === 'T' ? 'Tarde' : turno === 'N' ? 'Noche' : turno,
+   238→    ...v,
+   239→    prodHora: v.horas ? +(v.bultos / v.horas).toFixed(1) : 0,
+   240→  })).sort((a, b) => b.bultos - a.bultos)
+   241→
+   242→  // heatmap turno x hora
+   243→  const heat = ['M', 'T', 'N'].map((turno) => {
+   244→    const fila = Array.from({ length: 24 }, () => 0)
+   245→    for (const r of th) if (r.turno === turno) fila[r.hora] = Math.max(fila[r.hora], Math.round(r.bultos / Math.max(1, r.operarios)))
+   246→    return { turno, valores: fila }
+   247→  })
+   248→
+   249→  // circuitos
+   250→  const ciAgg = new Map<string, number>()
+   251→  for (const r of ci) ciAgg.set(r.circuito, (ciAgg.get(r.circuito) ?? 0) + r.bultos)
+   252→  const circuitos = [...ciAgg.entries()].map(([circuito, bultos]) => ({ circuito, bultos })).sort((a, b) => b.bultos - a.bultos)
+   253→
+   254→  // distribucion de jornadas 8h vs extras
+   255→  const distHoras = new Map<number, number>()
+   256→  for (const r of ops) distHoras.set(r.horasActivas, (distHoras.get(r.horasActivas) ?? 0) + 1)
+   257→  const distribucion = [...distHoras.entries()].sort((a, b) => a[0] - b[0]).map(([horas, opsDia]) => ({ horas, opsDia }))
+   258→
+   259→  const opsExtras = ops.filter((r) => r.extras > 0)
+   260→  const extrasResumen = {
+   261→    opsDiasTotal: ops.length,
+   262→    opsDiasConExtras: opsExtras.length,
+   263→    pctOpsDiasConExtras: ops.length ? +((opsExtras.length / ops.length) * 100).toFixed(1) : 0,
+   264→    horasExtras: opsExtras.reduce((a, r) => a + r.extras, 0),
+   265→    bultosExtras: opsExtras.reduce((a, r) => a + r.bultosExtras, 0),
+   266→    bultosTotales: ops.reduce((a, r) => a + r.bultos, 0),
+   267→  }
+   268→  extrasResumen.pctBultosExtras = extrasResumen.bultosTotales ? +((extrasResumen.bultosExtras / extrasResumen.bultosTotales) * 100).toFixed(1) : 0
+   269→
+   270→  // top operarios por productividad (minimo 80 horas)
+   271→  const opAgg = new Map<string, { nombre: string | null; bultos: number; horas: number; extras: number; dias: number; funcion: string }>()
+   272→  for (const r of ops) {
+   273→    let o = opAgg.get(r.operario)
+   274→    if (!o) { o = { nombre: r.nombre, bultos: 0, horas: 0, extras: 0, dias: 0, funcion: r.funcion }; opAgg.set(r.operario, o) }
+   275→    if (!o.nombre && r.nombre) o.nombre = r.nombre
+   276→    o.bultos += r.bultos
+   277→    o.horas += r.horasActivas
+   278→    o.extras += r.extras
+   279→    o.dias += 1
+   280→  }
+   281→  const operarios = [...opAgg.entries()]
+   282→    .map(([operario, o]) => ({ operario, nombre: o.nombre ?? operario, bultos: o.bultos, horas: o.horas, extras: o.extras, dias: o.dias, prodHora: o.horas ? +(o.bultos / o.horas).toFixed(1) : 0 }))
+   283→    .filter((o) => o.horas >= 80)
+   284→    .sort((a, b) => b.prodHora - a.prodHora)
+   285→
+   286→  // serie diaria
+   287→  const serDia = new Map<string, { bultos: number; horas: number; ops: number }>()
+   288→  for (const r of ops) {
+   289→    const k = dia(r.fecha)
+   290→    let s = serDia.get(k)
+   291→    if (!s) { s = { bultos: 0, horas: 0, ops: 0 }; serDia.set(k, s) }
+   292→    s.bultos += r.bultos
+   293→    s.horas += r.horasActivas
+   294→    s.ops += 1
+   295→  }
+   296→  const serie = [...serDia.entries()].sort().map(([fecha, v]) => ({ fecha, ...v, prodHora: v.horas ? +(v.bultos / v.horas).toFixed(1) : 0 }))
+   297→
+   298→  const bultosTot = ops.reduce((a, r) => a + r.bultos, 0)
+   299→  const horasTot = ops.reduce((a, r) => a + r.horasActivas, 0)
+   300→
+   301→  return {
+   302→    perfilHora,
+   303→    pico: { ...pico },
+   304→    valle: { ...valle },
+   305→    porTurno,
+   306→    heat,
+   307→    circuitos: circuitos.slice(0, 17),
+   308→    distribucion,
+   309→    extrasResumen,
+   310→    operariosTop: operarios.slice(0, 15),
+   311→    operariosBottom: operarios.slice(-15).reverse(),
+   312→    operariosExtras: [...opAgg.entries()].map(([operario, o]) => ({ operario, nombre: o.nombre ?? operario, extras: o.extras, dias: o.dias })).filter((o) => o.extras > 0).sort((a, b) => b.extras - a.extras).slice(0, 15),
+   313→    serie,
+   314→    resumen: { bultos: bultosTot, horas: horasTot, prodHora: horasTot ? +(bultosTot / horasTot).toFixed(1) : 0, opsUnicos: opAgg.size },
+   315→  }
+   316→}
+   317→
+   318→// ============ CAPACIDAD H61 (ritmo de preparacion: jornada vs extras) ============
+   319→// Regla: las primeras 8 horas con produccion de cada operario-dia cuentan como
+   320→// jornada base; el excedente de horas y sus bultos cuentan como horas extra.
+   321→function mediana(vals: number[]): number {
+   322→  if (!vals.length) return 0
+   323→  const s = [...vals].sort((a, b) => a - b)
+   324→  const mid = Math.floor(s.length / 2)
+   325→  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+   326→}
+   327→
+   328→export async function getCapacidad(f: Filtros) {
+   329→  const [ops, oh] = await Promise.all([
+   330→    db.h61OpDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } }),
+   331→    db.h61OpHora.findMany({ where: { fecha: rango(f) } }),
+   332→  ])
+   333→  if (!ops.length) return { serie: [], porMes: [], porTurno: [], perfilHora: [], resumen: null, feriados: [], tieneOpHora: oh.length > 0 }
+   334→
+   335→  // --- feriados argentinos (se sincronizan on-demand desde api.argentinadatos.com.ar) ---
+   336→  const anios = new Set<number>()
+   337→  for (const r of ops) anios.add(r.fecha.getUTCFullYear())
+   338→  const feriadosMap = await getFeriadosMap([...anios])
+   339→
+   340→  // --- serie diaria ---
+   341→  // Regla de feriados: en un dia feriado TODO el tiempo trabajado y sus bultos
+   342→  // cuentan como horas extra, y el dia se mide aparte (no influye en los
+   343→  // promedios, medianas, perfiles ni tabla por turno de la medicion normal).
+   344→  const porDia = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; ops: Set<string>; opsExtras: Set<string>; opDias: number }>()
+   345→  for (const r of ops) {
+   346→    const k = dia(r.fecha)
+   347→    const fer = feriadosMap.has(k)
+   348→    let p = porDia.get(k)
+   349→    if (!p) { p = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, ops: new Set(), opsExtras: new Set(), opDias: 0 }; porDia.set(k, p) }
+   350→    p.bultos += r.bultos
+   351→    if (fer) {
+   352→      p.bultosExtras += r.bultos
+   353→      p.horasExtras += r.horasActivas
+   354→    } else {
+   355→      p.bultosBase += r.bultosBase
+   356→      p.bultosExtras += r.bultosExtras
+   357→      p.horasExtras += r.extras
+   358→    }
+   359→    p.horas += r.horasActivas
+   360→    p.ops.add(r.operario)
+   361→    if (fer || r.extras > 0) p.opsExtras.add(r.operario)
+   362→    p.opDias += 1
+   363→  }
+   364→
+   365→  const serie = [...porDia.entries()].sort().map(([fecha, p]) => ({
+   366→    fecha,
+   367→    bultos: p.bultos,
+   368→    bultosBase: p.bultosBase,
+   369→    bultosExtras: p.bultosExtras,
+   370→    pctExtras: p.bultos ? +((p.bultosExtras / p.bultos) * 100).toFixed(1) : 0,
+   371→    horas: p.horas,
+   372→    horasExtras: p.horasExtras,
+   373→    ritmo: p.horas ? +(p.bultos / p.horas).toFixed(1) : null,
+   374→    ops: p.ops.size,
+   375→    opsExtras: p.opsExtras.size,
+   376→    opDias: p.opDias,
+   377→    esFeriado: feriadosMap.has(fecha),
+   378→    feriado: feriadosMap.get(fecha)?.nombre ?? null,
+   379→  }))
+   380→
+   381→  // --- agregados por mes (medicion normal sin feriados; la produccion de
+   382→  //     feriados se acumula aparte en bultosFeriado) ---
+   383→  const mesAgg = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; bultosFeriado: number; horas: number; horasExtras: number; horasFeriado: number; opDias: number; ops: Set<string>; opsExtras: Set<string>; ritmos: number[]; dias: number; diasFeriado: number }>()
+   384→  for (const s of serie) {
+   385→    const k = s.fecha.slice(0, 7)
+   386→    let m = mesAgg.get(k)
+   387→    if (!m) { m = { bultos: 0, bultosBase: 0, bultosExtras: 0, bultosFeriado: 0, horas: 0, horasExtras: 0, horasFeriado: 0, opDias: 0, ops: new Set(), opsExtras: new Set(), ritmos: [], dias: 0, diasFeriado: 0 }; mesAgg.set(k, m) }
+   388→    if (s.esFeriado) {
+   389→      m.diasFeriado += 1
+   390→      m.bultosFeriado += s.bultos
+   391→      m.horasFeriado += s.horas
+   392→      continue
+   393→    }
+   394→    m.dias += 1
+   395→    m.bultos += s.bultos
+   396→    m.bultosBase += s.bultosBase
+   397→    m.bultosExtras += s.bultosExtras
+   398→    m.horas += s.horas
+   399→    m.horasExtras += s.horasExtras
+   400→    m.opDias += s.opDias
+   401→    m.ritmos.push(s.ritmo ?? 0)
+   402→  }
+   403→  // personas distintas por mes (necesita operarios por dia)
+   404→  const opsPorDia = new Map<string, { ops: Set<string>; opsExtras: Set<string> }>()
+   405→  for (const r of ops) {
+   406→    const k = dia(r.fecha)
+   407→    let p = opsPorDia.get(k)
+   408→    if (!p) { p = { ops: new Set(), opsExtras: new Set() }; opsPorDia.set(k, p) }
+   409→    p.ops.add(r.operario)
+   410→    if (feriadosMap.has(k) || r.extras > 0) p.opsExtras.add(r.operario)
+   411→  }
+   412→  for (const s of serie) {
+   413→    if (s.esFeriado) continue
+   414→    const m = mesAgg.get(s.fecha.slice(0, 7))
+   415→    const p = opsPorDia.get(s.fecha)
+   416→    if (!m || !p) continue
+   417→    for (const op of p.ops) m.ops.add(op)
+   418→    for (const op of p.opsExtras) m.opsExtras.add(op)
+   419→  }
+   420→  const porMes = [...mesAgg.entries()].sort().map(([mes, m]) => ({
+   421→    mes,
+   422→    dias: m.dias,
+   423→    diasFeriado: m.diasFeriado,
+   424→    actividades: m.opDias,
+   425→    personas: m.ops.size,
+   426→    personasExtras: m.opsExtras.size,
+   427→    bultos: m.bultos,
+   428→    bultosBase: m.bultosBase,
+   429→    bultosExtras: m.bultosExtras,
+   430→    bultosFeriado: m.bultosFeriado,
+   431→    pctExtras: m.bultos ? +((m.bultosExtras / m.bultos) * 100).toFixed(1) : 0,
+   432→    pctExtrasTotal: (m.bultos + m.bultosFeriado) ? +(((m.bultosExtras + m.bultosFeriado) / (m.bultos + m.bultosFeriado)) * 100).toFixed(1) : 0,
+   433→    horas: m.horas,
+   434→    horasExtras: m.horasExtras,
+   435→    ritmoProm: m.horas ? +(m.bultos / m.horas).toFixed(1) : null,
+   436→    ritmoMediana: m.ritmos.length ? +mediana(m.ritmos).toFixed(1) : null,
+   437→  }))
+   438→
+   439→  // --- perfil por hora: colaboradores en jornada vs extras (promedio por dia) ---
+   440→  type HoraAgg = { fechas: Set<string>; jornada: Map<string, Set<string>>; extras: Map<string, Set<string>>; bultos: Map<string, number> }
+   441→  const horasAgg: HoraAgg[] = Array.from({ length: 24 }, () => ({ fechas: new Set<string>(), jornada: new Map(), extras: new Map(), bultos: new Map() }))
+   442→  for (const r of oh) {
+   443→    const h = horasAgg[r.hora]
+   444→    if (!h) continue
+   445→    const k = dia(r.fecha)
+   446→    if (feriadosMap.has(k)) continue // perfil de la medicion normal: feriados aparte
+   447→    h.fechas.add(k)
+   448→    const destino = r.esExtra ? h.extras : h.jornada
+   449→    let set = destino.get(k)
+   450→    if (!set) { set = new Set(); destino.set(k, set) }
+   451→    set.add(r.operario)
+   452→    h.bultos.set(k, (h.bultos.get(k) ?? 0) + r.bultos)
+   453→  }
+   454→  const perfilHora = horasAgg.map((h, hora) => {
+   455→    const n = h.fechas.size
+   456→    const sumaJornada = [...h.jornada.values()].reduce((a, s) => a + s.size, 0)
+   457→    const sumaExtras = [...h.extras.values()].reduce((a, s) => a + s.size, 0)
+   458→    const sumaBultos = [...h.bultos.values()].reduce((a, b) => a + b, 0)
+   459→    return {
+   460→      hora,
+   461→      etiqueta: `${String(hora).padStart(2, '0')}:00`,
+   462→      opsJornada: n ? +(sumaJornada / n).toFixed(1) : 0,
+   463→      opsExtras: n ? +(sumaExtras / n).toFixed(1) : 0,
+   464→      bultosProm: n ? Math.round(sumaBultos / n) : 0,
+   465→    }
+   466→  })
+   467→
+   468→  // --- resumen por turno (ventanas: TM 6-14, TT 14-22, TN 23-06) ---
+   469→  const turnoAgg = new Map<string, { bultos: number; bultosBase: number; bultosExtras: number; horas: number; horasExtras: number; opDias: number; ops: Set<string>; opsExtras: Set<string> }>()
+   470→  for (const r of ops) {
+   471→    if (feriadosMap.has(dia(r.fecha))) continue // feriados se miden aparte
+   472→    let t = turnoAgg.get(r.turno)
+   473→    if (!t) { t = { bultos: 0, bultosBase: 0, bultosExtras: 0, horas: 0, horasExtras: 0, opDias: 0, ops: new Set(), opsExtras: new Set() }; turnoAgg.set(r.turno, t) }
+   474→    t.bultos += r.bultos
+   475→    t.bultosBase += r.bultosBase
+   476→    t.bultosExtras += r.bultosExtras
+   477→    t.horas += r.horasActivas
+   478→    t.horasExtras += r.extras
+   479→    t.opDias += 1
+   480→    t.ops.add(r.operario)
+   481→    if (r.extras > 0) t.opsExtras.add(r.operario)
+   482→  }
+   483→  const NOMBRE_TURNO: Record<string, string> = { M: 'TM (6 a 14)', T: 'TT (14 a 22)', N: 'TN (23 a 06)' }
+   484→  const porTurno = [...turnoAgg.entries()].sort().map(([turno, t]) => ({
+   485→    turno,
+   486→    nombre: NOMBRE_TURNO[turno] ?? turno,
+   487→    opDias: t.opDias,
+   488→    personas: t.ops.size,
+   489→    personasExtras: t.opsExtras.size,
+   490→    bultos: t.bultos,
+   491→    bultosBase: t.bultosBase,
+   492→    bultosExtras: t.bultosExtras,
+   493→    pctExtras: t.bultos ? +((t.bultosExtras / t.bultos) * 100).toFixed(1) : 0,
+   494→    horasExtras: t.horasExtras,
+   495→    ritmoProm: t.horas ? +(t.bultos / t.horas).toFixed(1) : null,
+   496→  }))
+   497→
+   498→  // --- feriados con actividad (se informan aparte) ---
+   499→  const feriadosDetalle = serie.filter((s) => s.esFeriado).map((s) => ({
+   500→    fecha: s.fecha,
+   501→    nombre: s.feriado ?? 'Feriado',
+   502→    tipo: feriadosMap.get(s.fecha)?.tipo ?? 'inamovible',
+   503→    personas: s.ops,
+   504→    opDias: s.opDias,
+   505→    bultos: s.bultos,
+   506→    horas: s.horas,
+   507→    ritmo: s.ritmo,
+   508→  }))
+   509→
+   510→  // --- resumen del periodo filtrado (medicion normal = solo dias no feriados) ---
+   511→  const normales = serie.filter((s) => !s.esFeriado)
+   512→  const bultos = normales.reduce((a, s) => a + s.bultos, 0)
+   513→  const bultosBase = normales.reduce((a, s) => a + s.bultosBase, 0)
+   514→  const bultosExtras = normales.reduce((a, s) => a + s.bultosExtras, 0)
+   515→  const horas = normales.reduce((a, s) => a + s.horas, 0)
+   516→  const horasExtras = normales.reduce((a, s) => a + s.horasExtras, 0)
+   517→  const bultosFeriado = serie.reduce((a, s) => a + (s.esFeriado ? s.bultos : 0), 0)
+   518→  const horasFeriado = serie.reduce((a, s) => a + (s.esFeriado ? s.horas : 0), 0)
+   519→  const personas = new Set<string>()
+   520→  const personasExtras = new Set<string>()
+   521→  const personasFeriado = new Set<string>()
+   522→  for (const [k, p] of opsPorDia) {
+   523→    if (feriadosMap.has(k)) {
+   524→      for (const op of p.ops) personasFeriado.add(op)
+   525→      continue
+   526→    }
+   527→    for (const op of p.ops) personas.add(op)
+   528→    for (const op of p.opsExtras) personasExtras.add(op)
+   529→  }
+   530→  const resumen = {
+   531→    dias: normales.length,
+   532→    actividades: normales.reduce((a, s) => a + s.opDias, 0),
+   533→    personas: personas.size,
+   534→    personasExtras: personasExtras.size,
+   535→    bultos,
+   536→    bultosBase,
+   537→    bultosExtras,
+   538→    pctExtras: bultos ? +((bultosExtras / bultos) * 100).toFixed(1) : 0,
+   539→    horas,
+   540→    horasExtras,
+   541→    ritmoProm: horas ? +(bultos / horas).toFixed(1) : null,
+   542→    ritmoMediana: +mediana(normales.map((s) => s.ritmo ?? 0)).toFixed(1),
+   543→    // feriados: medicion aparte; sus bultos cuentan como extras en el total
+   544→    diasFeriado: serie.length - normales.length,
+   545→    bultosFeriado,
+   546→    horasFeriado,
+   547→    personasFeriado: personasFeriado.size,
+   548→    pctExtrasTotal: bultos + bultosFeriado ? +(((bultosExtras + bultosFeriado) / (bultos + bultosFeriado)) * 100).toFixed(1) : 0,
+   549→  }
+   550→
+   551→  return { serie, porMes, porTurno, perfilHora, resumen, feriados: feriadosDetalle, tieneOpHora: oh.length > 0 }
+   552→}
+   553→
+   554→// ============ TIEMPOS MUERTOS ============
+   555→export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
+   556→  const where: Record<string, unknown> = { fecha: rango(f) }
+   557→  if (!f.incluirBajas) where.OR = [{ estado: null }, { estado: { not: 'B' } }]
+   558→  if (f.turno) where.turno = f.turno
+   559→
+   560→  const rows = await db.tiempoMuerto.findMany({ where })
+   561→
+   562→  const totalMin = rows.reduce((a, r) => a + r.minutosEf, 0)
+   563→  const cats = new Map<string, { minutos: number; registros: number }>()
+   564→  for (const r of rows) {
+   565→    let c = cats.get(r.categoria)
+   566→    if (!c) { c = { minutos: 0, registros: 0 }; cats.set(r.categoria, c) }
+   567→    c.minutos += r.minutosEf
+   568→    c.registros += 1
+   569→  }
+   570→  const porCategoria = [...cats.entries()].map(([categoria, v]) => ({ categoria, ...v, pct: totalMin ? +((v.minutos / totalMin) * 100).toFixed(1) : 0 })).sort((a, b) => b.minutos - a.minutos)
+   571→
+   572→  // nave x pasillo (ESPERA UBICACION)
+   573→  const naves = new Map<string, { minutos: number; registros: number; pasillos: Map<string, { minutos: number; registros: number }> }>()
+   574→  for (const r of rows) {
+   575→    if (r.categoria !== 'ESPERA UBICACION' || !r.nave) continue
+   576→    let n = naves.get(r.nave)
+   577→    if (!n) { n = { minutos: 0, registros: 0, pasillos: new Map() }; naves.set(r.nave, n) }
+   578→    n.minutos += r.minutosEf
+   579→    n.registros += 1
+   580→    const pk = r.pasillo ?? '?'
+   581→    let p = n.pasillos.get(pk)
+   582→    if (!p) { p = { minutos: 0, registros: 0 }; n.pasillos.set(pk, p) }
+   583→    p.minutos += r.minutosEf
+   584→    p.registros += 1
+   585→  }
+   586→  const porNave = [...naves.entries()].map(([nave, v]) => ({
+   587→    nave,
+   588→    minutos: v.minutos,
+   589→    registros: v.registros,
+   590→    pasillos: [...v.pasillos.entries()].map(([pasillo, p]) => ({ pasillo, ...p })).sort((a, b) => b.minutos - a.minutos),
+   591→  })).sort((a, b) => b.minutos - a.minutos)
+   592→
+   593→  // por turno y por dia
+   594→  const turnosMap = new Map<string, number>()
+   595→  const diasMap = new Map<string, number>()
+   596→  const horasMap = new Map<number, number>()
+   597→  const detalles = new Map<string, { minutos: number; registros: number }>()
+   598→  for (const r of rows) {
+   599→    turnosMap.set(r.turno, (turnosMap.get(r.turno) ?? 0) + r.minutosEf)
+   600→    const k = dia(r.fecha)
+   601→    diasMap.set(k, (diasMap.get(k) ?? 0) + r.minutosEf)
+   602→    if (r.horaDesde != null) horasMap.set(Math.floor(r.horaDesde / 60), (horasMap.get(Math.floor(r.horaDesde / 60)) ?? 0) + r.minutosEf)
+   603→    const dk = r.detalle ?? '(sin dato)'
+   604→    let d = detalles.get(dk)
+   605→    if (!d) { d = { minutos: 0, registros: 0 }; detalles.set(dk, d) }
+   606→    d.minutos += r.minutosEf
+   607→    d.registros += 1
+   608→  }
+   609→  const NOM_TURNO: Record<string, string> = { TM: 'Mañana', TT: 'Tarde', TN: 'Noche' }
+   610→  const porTurno = [...turnosMap.entries()].map(([t, minutos]) => ({ turno: t, nombre: NOM_TURNO[t] ?? t, minutos })).sort((a, b) => b.minutos - a.minutos)
+   611→  const porDia = [...diasMap.entries()].sort().map(([fecha, minutos]) => ({ fecha, minutos }))
+   612→  const porHora = Array.from({ length: 24 }, (_, h) => ({ hora: h, etiqueta: `${String(h).padStart(2, '0')}:00`, minutos: horasMap.get(h) ?? 0 }))
+   613→  const topDetalles = [...detalles.entries()].map(([detalle, v]) => ({ detalle, ...v })).sort((a, b) => b.minutos - a.minutos).slice(0, 25)
+   614→
+   615→  // cruces codigo x categoria
+   616→  const codCat = new Map<string, { code: number | null; categoria: string; minutos: number; registros: number }>()
+   617→  for (const r of rows) {
+   618→    const k = `${r.motivoCode ?? '-'}|${r.categoria}`
+   619→    let c = codCat.get(k)
+   620→    if (!c) { c = { code: r.motivoCode, categoria: r.categoria, minutos: 0, registros: 0 }; codCat.set(k, c) }
+   621→    c.minutos += r.minutosEf
+   622→    c.registros += 1
+   623→  }
+   624→  const codigoCategoria = [...codCat.values()].sort((a, b) => b.minutos - a.minutos).slice(0, 20)
+   625→
+   626→  return {
+   627→    totalMin,
+   628→    totalHoras: +(totalMin / 60).toFixed(1),
+   629→    registros: rows.length,
+   630→    porCategoria,
+   631→    porNave,
+   632→    porTurno,
+   633→    porDia,
+   634→    porHora,
+   635→    topDetalles,
+   636→    codigoCategoria,
+   637→    navesResumen: {
+   638→      minutos: porNave.reduce((a, n) => a + n.minutos, 0),
+   639→      naves: porNave.length,
+   640→      pasillos: porNave.reduce((a, n) => a + n.pasillos.length, 0),
+   641→    },
+   642→  }
+   643→}
+   644→
+   645→// ============ PICKING ============
+   646→export async function getPicking(f: Filtros) {
+   647→  const where = { fecha: rango(f) }
+   648→  const [count, ops] = await Promise.all([
+   649→    db.pickingEvento.count({ where }),
+   650→    db.pickingEvento.findMany({ where, orderBy: [{ fecha: 'asc' }, { operario: 'asc' }, { horaMin: 'asc' }], select: { fecha: true, operario: true, horaMin: true, bultos: true, soporte: true, circuito: true } }),
+   651→  ])
+   652→
+   653→  if (!count) {
+   654→    return { registros: 0, vacio: true as const }
+   655→  }
+   656→
+   657→  // gaps entre eventos consecutivos por operario y dia
+   658→  const buckets = [
+   659→    { label: '0-1 min', min: 0, max: 1 },
+   660→    { label: '1-2 min', min: 1, max: 2 },
+   661→    { label: '2-5 min', min: 2, max: 5 },
+   662→    { label: '5-10 min', min: 5, max: 10 },
+   663→    { label: '10-20 min', min: 10, max: 20 },
+   664→    { label: '20-60 min', min: 20, max: 60 },
+   665→    { label: '> 60 min', min: 60, max: Infinity },
+   666→  ]
+   667→  const gapCounts = new Array(buckets.length).fill(0)
+   668→  const soporteGapCounts = new Array(buckets.length).fill(0)
+   669→  let gapSum = 0, gapN = 0, soporteGapSum = 0, soporteGapN = 0, cambiosSoporte = 0
+   670→  const opAgg = new Map<string, { nombre: string; eventos: number; gapSum: number; gapN: number; cambioSop: number; bultos: number }>()
+   671→  const serDia = new Map<string, { eventos: number; gapMin: number }>()
+   672→
+   673→  let prev: { operario: string; key: string; horaMin: number; soporte: string | null } | null = null
+   674→  for (const r of ops) {
+   675→    const opKey = r.operario
+   676→    let o = opAgg.get(opKey)
+   677→    if (!o) { o = { nombre: opKey, eventos: 0, gapSum: 0, gapN: 0, cambioSop: 0, bultos: 0 }; opAgg.set(opKey, o) }
+   678→    o.eventos += 1
+   679→    o.bultos += r.bultos ?? 0
+   680→    const k = r.fecha.toISOString().slice(0, 10)
+   681→    let s = serDia.get(k)
+   682→    if (!s) { s = { eventos: 0, gapMin: 0 }; serDia.set(k, s) }
+   683→    s.eventos += 1
+   684→
+   685→    if (prev && prev.operario === opKey && prev.key === k && r.horaMin != null && prev.horaMin != null) {
+   686→      const gap = Math.max(0, r.horaMin - prev.horaMin)
+   687→      if (gap > 720) {
+   688→        // salto de jornada (>12 h): no es tiempo muerto, se ignora para las metricas
+   689→        prev = { operario: opKey, key: k, horaMin: r.horaMin ?? -1, soporte: r.soporte }
+   690→        continue
+   691→      }
+   692→      const bi = buckets.findIndex((b) => gap >= b.min && gap < b.max)
+   693→      if (bi >= 0) gapCounts[bi]++
+   694→      gapSum += gap; gapN++
+   695→      s.gapMin += gap
+   696→      o.gapSum += gap; o.gapN++
+   697→      const cambioSop = prev.soporte != null && r.soporte != null && prev.soporte !== r.soporte
+   698→      if (cambioSop) {
+   699→        cambiosSoporte++
+   700→        if (bi >= 0) soporteGapCounts[bi]++
+   701→        soporteGapSum += gap; soporteGapN++
+   702→        o.cambioSop++
+   703→      }
+   704→    }
+   705→    prev = { operario: opKey, key: k, horaMin: r.horaMin ?? -1, soporte: r.soporte }
+   706→  }
+   707→
+   708→  const serie = [...serDia.entries()].sort().map(([fecha, v]) => ({ fecha, eventos: v.eventos, gapPromedio: v.eventos > 1 ? +(v.gapMin / (v.eventos - 1)).toFixed(2) : null }))
+   709→
+   710→  return {
+   711→    registros: count,
+   712→    vacio: false as const,
+   713→    operarios: opAgg.size,
+   714→    gapPromedio: gapN ? +(gapSum / gapN).toFixed(2) : null,
+   715→    gapMedianaEst: gapN ? +(gapSum / gapN).toFixed(2) : null,
+   716→    cambiosSoporte,
+   717→    gapPromedioCambioSoporte: soporteGapN ? +(soporteGapSum / soporteGapN).toFixed(2) : null,
+   718→    distribucionGaps: buckets.map((b, i) => ({ bucket: b.label, cantidad: gapCounts[i] })),
+   719→    distribucionGapsSoporte: buckets.map((b, i) => ({ bucket: b.label, cantidad: soporteGapCounts[i] })),
+   720→    operariosTop: [...opAgg.values()].filter((o) => o.gapN > 30).map((o) => ({ operario: o.nombre, eventos: o.eventos, bultos: o.bultos, gapPromedio: +(o.gapSum / o.gapN).toFixed(2), cambiosSoporte: o.cambioSop })).sort((a, b) => b.eventos - a.eventos).slice(0, 15),
+   721→    serie,
+   722→  }
+   723→}
+   724→
+   725→// ============ PRODUCTIVIDAD POR CIRCUITO/SECTOR (Tiempos E-8 / Productividad X Circuito) ============
+   726→const r1 = (x: number) => Math.round(x * 10) / 10
+   727→const r2 = (x: number) => Math.round(x * 100) / 100
+   728→
+   729→export async function getProdCirc(f: Filtros) {
+   730→  const where = { fecha: rango(f) }
+   731→  const [tot, sectores, filas, ops] = await Promise.all([
+   732→    db.prodCircuito.aggregate({
+   733→      where,
+   734→      _count: true,
+   735→      _min: { fecha: true },
+   736→      _max: { fecha: true },
+   737→      _sum: { soportes: true, lineas: true, bultos: true, tiempoTotal: true, tiempoMuerto: true, tiempoNeto: true, tiempoSuperNeto: true },
+   738→    }),
+   739→    db.prodCircuito.groupBy({
+   740→      by: ['sector'],
+   741→      where,
+   742→      _sum: { soportes: true, bultos: true, tiempoTotal: true, tiempoMuerto: true, tiempoSuperNeto: true },
+   743→    }),
+   744→    db.prodCircuito.findMany({ where, select: { fecha: true, bultos: true, tiempoTotal: true, tiempoMuerto: true, tiempoSuperNeto: true } }),
+   745→    db.prodCircuito.groupBy({
+   746→      by: ['operario', 'nombre'],
+   747→      where,
+   748→      _sum: { bultos: true, soportes: true, tiempoTotal: true, tiempoMuerto: true, tiempoSuperNeto: true },
+   749→    }),
+   750→  ])
+   751→
+   752→  if (!tot._count) return { registros: 0, vacio: true as const }
+   753→
+   754→  const s = tot._sum
+   755→  const kpis = {
+   756→    registros: tot._count,
+   757→    soportes: Math.round(s.soportes ?? 0),
+   758→    lineas: Math.round(s.lineas ?? 0),
+   759→    bultos: Math.round(s.bultos ?? 0),
+   760→    horasTotal: r1(s.tiempoTotal ?? 0),
+   761→    horasMuerto: r1(s.tiempoMuerto ?? 0),
+   762→    horasNeto: r1(s.tiempoNeto ?? 0),
+   763→    pctMuerto: s.tiempoTotal ? r1(((s.tiempoMuerto ?? 0) / s.tiempoTotal) * 100) : null,
+   764→    prodTotal: s.tiempoTotal ? r2((s.bultos ?? 0) / s.tiempoTotal) : null,
+   765→    prodNeto: s.tiempoNeto ? r2((s.bultos ?? 0) / s.tiempoNeto) : null,
+   766→    prodSuperNeto: s.tiempoSuperNeto ? r2((s.bultos ?? 0) / s.tiempoSuperNeto) : null,
+   767→  }
+   768→
+   769→  const porSector = sectores
+   770→    .map((x) => ({
+   771→      sector: x.sector || '(sin sector)',
+   772→      soportes: Math.round(x._sum.soportes ?? 0),
+   773→      bultos: Math.round(x._sum.bultos ?? 0),
+   774→      pctMuerto: x._sum.tiempoTotal ? r1(((x._sum.tiempoMuerto ?? 0) / x._sum.tiempoTotal) * 100) : null,
+   775→      prodSuperNeto: x._sum.tiempoSuperNeto && x._sum.tiempoSuperNeto > 0 ? r2((x._sum.bultos ?? 0) / x._sum.tiempoSuperNeto) : null,
+   776→    }))
+   777→    .sort((a, b) => b.bultos - a.bultos)
+   778→
+   779→  // serie mensual
+   780→  const porMesMap = new Map<string, { bultos: number; tiempoTotal: number; tiempoMuerto: number; tiempoSuperNeto: number }>()
+   781→  for (const r of filas) {
+   782→    const k = dia(r.fecha).slice(0, 7)
+   783→    let m = porMesMap.get(k)
+   784→    if (!m) { m = { bultos: 0, tiempoTotal: 0, tiempoMuerto: 0, tiempoSuperNeto: 0 }; porMesMap.set(k, m) }
+   785→    m.bultos += r.bultos ?? 0
+   786→    m.tiempoTotal += r.tiempoTotal ?? 0
+   787→    m.tiempoMuerto += r.tiempoMuerto ?? 0
+   788→    m.tiempoSuperNeto += r.tiempoSuperNeto ?? 0
+   789→  }
+   790→  const porMes = [...porMesMap.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([mes, m]) => ({
+   791→    mes,
+   792→    bultos: Math.round(m.bultos),
+   793→    pctMuerto: m.tiempoTotal ? r1((m.tiempoMuerto / m.tiempoTotal) * 100) : null,
+   794→    prodSuperNeto: m.tiempoSuperNeto > 0 ? r2(m.bultos / m.tiempoSuperNeto) : null,
+   795→  }))
+   796→
+   797→  const operariosTop = ops
+   798→    .map((x) => ({
+   799→      operario: x.operario,
+   800→      nombre: x.nombre || x.operario,
+   801→      bultos: Math.round(x._sum.bultos ?? 0),
+   802→      soportes: Math.round(x._sum.soportes ?? 0),
+   803→      horasTotal: r1(x._sum.tiempoTotal ?? 0),
+   804→      pctMuerto: x._sum.tiempoTotal ? r1(((x._sum.tiempoMuerto ?? 0) / x._sum.tiempoTotal) * 100) : null,
+   805→      prodSuperNeto: x._sum.tiempoSuperNeto && x._sum.tiempoSuperNeto > 0 ? r2((x._sum.bultos ?? 0) / x._sum.tiempoSuperNeto) : null,
+   806→    }))
+   807→    .sort((a, b) => b.bultos - a.bultos)
+   808→    .slice(0, 15)
+   809→
+   810→  return {
+   811→    registros: tot._count,
+   812→    vacio: false as const,
+   813→    desde: tot._min.fecha ? dia(tot._min.fecha) : undefined,
+   814→    hasta: tot._max.fecha ? dia(tot._max.fecha) : undefined,
+   815→    kpis,
+   816→    porSector,
+   817→    porMes,
+   818→    operariosTop,
+   819→  }
+   820→}
+   821→
+   822→// ============ STATUS ============
+   823→export async function getStatus() {
+   824→  const [ola, h61, tm, pk, pc, batches] = await Promise.all([
+   825→    db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+   826→    db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+   827→    db.tiempoMuerto.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+   828→    db.pickingEvento.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+   829→    db.prodCircuito.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+   830→    db.uploadBatch.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
+   831→  ])
+   832→  return {
+   833→    ola: { registros: ola._count, desde: ola._min.fecha, hasta: ola._max.fecha },
+   834→    h61: { registros: h61._count, desde: h61._min.fecha, hasta: h61._max.fecha },
+   835→    tm: { registros: tm._count, desde: tm._min.fecha, hasta: tm._max.fecha },
+   836→    picking: { registros: pk._count, desde: pk._min.fecha, hasta: pk._max.fecha },
+   837→    prodcirc: { registros: pc._count, desde: pc._min.fecha, hasta: pc._max.fecha },
+   838→    batches: batches.map((b) => ({ ...b, createdAt: b.createdAt.toISOString() })),
+   839→  }
+   840→}
+   841→
