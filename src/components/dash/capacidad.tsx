@@ -37,7 +37,7 @@ interface FilaMes {
   ritmoMediana: number | null
 }
 interface CapacidadData {
-  serie: { fecha: string; bultos: number; bultosBase: number; bultosExtras: number; pctExtras: number; ritmo: number | null; ops: number; opsExtras: number; opDias: number; esFeriado: boolean; feriado: string | null }[]
+  serie: { fecha: string; bultos: number; bultosNormales: number; bultosBase: number; bultosExtras: number; bultosFeriado: number; pctExtras: number; ritmo: number | null; ops: number; opsExtras: number; opDias: number; esFeriado: boolean; feriado: string | null; feriadoManana: string | null }[]
   porMes: FilaMes[]
   porTurno: { turno: string; nombre: string; opDias: number; personas: number; personasExtras: number; bultos: number; bultosBase: number; bultosExtras: number; pctExtras: number; horasExtras: number; ritmoProm: number | null }[]
   perfilHora: { hora: number; etiqueta: string; opsJornada: number; opsExtras: number; bultosProm: number }[]
@@ -140,8 +140,11 @@ export function CapacidadTab() {
             (las 23 del día + las 00 a 6 siguientes) se agrupa como un único día. El ritmo se mide en <b>bultos por hora-hombre</b>.
           </p>
           <p className="mt-2">
-            Los <b>feriados nacionales</b> (calendario de Argentina) se miden aparte: todo lo que se produce un feriado
-            cuenta como <b>horas extra</b> y esos días <b>no influyen</b> en los promedios, medianas ni perfiles de la medición normal.
+            Los <b>feriados nacionales</b> (calendario de Argentina) se miden aparte: todo lo producido en una
+            jornada feriada cuenta como <b>horas extra</b> y <b>no influye</b> en los promedios, medianas ni perfiles
+            de la medición normal. En el <b>turno noche</b> la jornada que antecede al feriado es la feriada:
+            los bultos de la noche del día previo (23 a 6) se computan como feriado junto con los diurnos del día
+            feriado; la noche del propio feriado (hacia el día siguiente) es jornada normal.
           </p>
         </AlertDescription>
       </Alert>
@@ -151,7 +154,7 @@ export function CapacidadTab() {
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Preparación por mes: sin extras vs horas extra vs feriados</CardTitle>
           <CardDescription>
-            Bultos apilados: dentro de la jornada del turno (verde), en horas extra (ámbar) y en feriados (rojo, todo cuenta como extra). La línea marca el porcentaje de la preparación que dependió de extras, feriados incluidos. Los promedios y medianas de ritmo usan solo los días no feriados
+            Bultos apilados: dentro de la jornada del turno (verde), en horas extra (ámbar) y en feriados (rojo, todo cuenta como extra). La línea marca el porcentaje de la preparación que dependió de extras, feriados incluidos. Los promedios y medianas de ritmo usan solo los días no feriados, y los bultos de feriado se asignan al mes del feriado (noche TN previa incluida)
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -180,7 +183,9 @@ export function CapacidadTab() {
             <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700">todo feriado = horas extra</Badge>
           </div>
           <CardDescription>
-            Feriados nacionales de Argentina detectados automáticamente. Su producción cuenta como horas extra y no influye en los promedios, medianas ni perfiles de la medición normal
+            Feriados nacionales de Argentina detectados automáticamente. Cada feriado reúne su jornada completa:
+            la noche del turno noche previo (23 a 6) más los diurnos del día feriado. Su producción cuenta como
+            horas extra y no influye en los promedios, medianas ni perfiles de la medición normal
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -191,7 +196,7 @@ export function CapacidadTab() {
               <p className="text-xs text-muted-foreground">{pct(resumen.bultos + resumen.bultosFeriado ? (resumen.bultosFeriado / (resumen.bultos + resumen.bultosFeriado)) * 100 : 0)} de la producción total</p>
             </div>
             <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Días feriado con actividad</p>
+              <p className="text-xs text-muted-foreground">Feriados con actividad</p>
               <p className="text-xl font-bold tabular-nums">{resumen.diasFeriado}</p>
               <p className="text-xs text-muted-foreground">{n(resumen.horasFeriado)} horas-hombre trabajadas</p>
             </div>
@@ -246,7 +251,7 @@ export function CapacidadTab() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Preparación por turno</CardTitle>
-          <CardDescription>Jornada base de cada turno (TM 6-14 · TT 14-22 · TN 23-06) y qué parte de su preparación dependió de extras. Los días feriados se miden aparte y no entran en esta tabla</CardDescription>
+          <CardDescription>Jornada base de cada turno (TM 6-14 · TT 14-22 · TN 23-06) y qué parte de su preparación dependió de extras. Las jornadas feriadas (días feriados y las noches TN que los anteceden) se miden aparte y no entran en esta tabla</CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -287,7 +292,7 @@ export function CapacidadTab() {
         <CardHeader className="pb-2">
           <CardTitle className="text-base">¿Cuántos colaboradores preparan en cada hora? — jornada vs extras</CardTitle>
           <CardDescription>
-            Promedio de personas con producción en cada hora del día: en verde las que están dentro de sus primeras 8 h, en ámbar las que están en horas extra. La línea marca los bultos promedio de esa hora. No incluye los días feriados
+            Promedio de personas con producción en cada hora del día: en verde las que están dentro de sus primeras 8 h, en ámbar las que están en horas extra. La línea marca los bultos promedio de esa hora. No incluye las jornadas feriadas (días feriados ni las noches TN previas a cada feriado)
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -366,7 +371,7 @@ export function CapacidadTab() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Días de {etiquetaMes(mes)}</CardTitle>
-            <CardDescription>Ritmo diario de preparación y cuánta gente trabajó con extras cada día. Los feriados (rojo) van todo a horas extra y no entran en la medición normal</CardDescription>
+            <CardDescription>Ritmo diario de preparación y cuánta gente trabajó con extras cada día. Los feriados (rojo) van todo a horas extra y no entran en la medición normal; la noche TN que antecede a un feriado se marca con “noche TN”</CardDescription>
           </CardHeader>
           <CardContent>
             <ScrollArea className="h-[360px] rounded-md border">
@@ -377,6 +382,7 @@ export function CapacidadTab() {
                     <TableHead className="text-right">Bultos</TableHead>
                     <TableHead className="text-right">Sin extras</TableHead>
                     <TableHead className="text-right">En extras</TableHead>
+                    <TableHead className="text-right">En feriado</TableHead>
                     <TableHead className="text-right">% extras</TableHead>
                     <TableHead className="text-right">Personas</TableHead>
                     <TableHead className="text-right">c/ extras</TableHead>
@@ -385,15 +391,21 @@ export function CapacidadTab() {
                 </TableHeader>
                 <TableBody>
                   {data.serie.filter((s) => s.fecha.startsWith(mes)).map((s) => (
-                    <TableRow key={s.fecha} className={s.esFeriado ? 'bg-red-50/60' : s.opsExtras > 0 ? 'bg-amber-50/50' : undefined}>
+                    <TableRow key={s.fecha} className={s.esFeriado || s.bultosFeriado > 0 ? 'bg-red-50/60' : s.opsExtras > 0 ? 'bg-amber-50/50' : undefined}>
                       <TableCell className="font-medium">
                         {fechaCorta(s.fecha)}{' '}
                         {s.esFeriado && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100" title={s.feriado ?? undefined}>feriado</Badge>}
+                        {!s.esFeriado && s.bultosFeriado > 0 && (
+                          <Badge variant="outline" className="ml-1 border-red-200 bg-red-50 text-red-700" title={`Noche TN que antecede a ${s.feriadoManana ?? 'feriado'}: todo cuenta como extra`}>
+                            noche TN
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{n(s.bultos)}</TableCell>
                       <TableCell className="text-right tabular-nums">{s.bultosBase ? n(s.bultosBase) : '—'}</TableCell>
                       <TableCell className="text-right tabular-nums text-amber-700">{s.bultosExtras ? n(s.bultosExtras) : '—'}</TableCell>
-                      <TableCell className="text-right tabular-nums">{pct(s.pctExtras)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-red-700">{s.bultosFeriado ? n(s.bultosFeriado) : '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums">{s.bultosNormales > 0 ? pct(s.pctExtras) : '—'}</TableCell>
                       <TableCell className="text-right tabular-nums">{s.ops}</TableCell>
                       <TableCell className="text-right tabular-nums">{s.opsExtras || '—'}</TableCell>
                       <TableCell className="text-right tabular-nums font-semibold">{n1(s.ritmo)}</TableCell>
