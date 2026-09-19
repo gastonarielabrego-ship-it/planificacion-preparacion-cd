@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { Warehouse, BarChart3, CalendarRange, Gauge, Timer, Boxes, UploadCloud, Factory } from 'lucide-react'
+import { Warehouse, BarChart3, CalendarRange, Gauge, Timer, Boxes, UploadCloud, Factory, Waves } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ResumenTab } from '@/components/dash/resumen'
+import { OlaTab } from '@/components/dash/ola'
 import { PlanificacionTab } from '@/components/dash/planificacion'
 import { ProductividadTab } from '@/components/dash/productividad'
 import { TiemposMuertosTab } from '@/components/dash/tiemposmuertos'
@@ -32,6 +33,7 @@ export default function Home() {
         <Tabs value={tab} onValueChange={setTab} className="space-y-4">
           <TabsList className="flex flex-wrap h-auto gap-1 justify-start">
             <TabsTrigger value="resumen" className="gap-1.5"><BarChart3 className="h-4 w-4" /> Resumen</TabsTrigger>
+            <TabsTrigger value="ola" className="gap-1.5"><Waves className="h-4 w-4" /> Ola</TabsTrigger>
             <TabsTrigger value="planificacion" className="gap-1.5"><CalendarRange className="h-4 w-4" /> Planificación</TabsTrigger>
             <TabsTrigger value="productividad" className="gap-1.5"><Gauge className="h-4 w-4" /> Productividad H61</TabsTrigger>
             <TabsTrigger value="prodcirc" className="gap-1.5"><Factory className="h-4 w-4" /> Prod. X Circuito</TabsTrigger>
@@ -41,6 +43,7 @@ export default function Home() {
           </TabsList>
 
           <TabsContent value="resumen"><ResumenTab onIrACarga={() => setTab('carga')} /></TabsContent>
+          <TabsContent value="ola"><OlaTab /></TabsContent>
           <TabsContent value="planificacion"><PlanificacionTab /></TabsContent>
           <TabsContent value="productividad"><ProductividadTab /></TabsContent>
           <TabsContent value="prodcirc"><ProdCircTab /></TabsContent>

@@ -138,6 +138,35 @@ export async function getPlanificacion(f: Filtros) {
   return { serie, meses, resumen }
 }
 
+// ============ OLA (analisis exclusivo de ola y pendientes) ============
+// Serie diaria cruda + lunes de cada semana ISO. Los agregados (mes/semana/dia de
+// semana, promedio y mediana) se recalculan en el cliente para que los filtros
+// mensual/semanal/diario sean consistentes entre si.
+const DIAS_SEM = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+
+export async function getOla(f: Filtros) {
+  const rows = await db.olaDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } })
+  const serie = rows.map((r) => {
+    const k = dia(r.fecha)
+    const d = new Date(k + 'T00:00:00.000Z')
+    const dow = d.getUTCDay() // 0=domingo
+    const lun = new Date(d)
+    lun.setUTCDate(lun.getUTCDate() - ((dow + 6) % 7)) // lunes de la semana
+    const ola = r.ola ?? 0
+    const pendiente = r.pendiente ?? 0
+    return {
+      fecha: k,
+      diaSemana: DIAS_SEM[dow],
+      esFinde: dow === 0 || dow === 6,
+      semana: lun.toISOString().slice(0, 10),
+      ola,
+      pendiente,
+      total: ola + pendiente,
+    }
+  })
+  return { serie }
+}
+
 // ============ PRODUCTIVIDAD H61 ============
 export async function getH61(f: Filtros) {
   const where: Record<string, unknown> = { fecha: rango(f) }
