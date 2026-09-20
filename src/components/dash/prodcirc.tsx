@@ -15,6 +15,8 @@ interface ProdCircData {
   vacio?: boolean
   desde?: string
   hasta?: string
+  meses?: number
+  fuentes?: { filename: string | null; rows: number; fecha: string }[]
   kpis?: {
     registros: number
     soportes: number
@@ -56,9 +58,31 @@ export function ProdCircTab() {
 
   const k = data.kpis
   const meses = (data.porMes ?? []).map((m) => ({ ...m, etiqueta: m.mes.slice(5) === '' ? m.mes : m.mes.replace('-', '/') }))
+  const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+  const etiquetaPeriodo = (() => {
+    if (!data.desde || !data.hasta) return null
+    const f = (iso: string) => { const [y, m] = iso.slice(0, 10).split('-'); return `${MESES_CORTOS[parseInt(m, 10) - 1]} ${y.slice(2)}` }
+    return `${f(data.desde)} → ${f(data.hasta)}`
+  })()
 
   return (
     <div className="space-y-4">
+      <Alert>
+        <Factory className="h-4 w-4" />
+        <AlertTitle className="text-sm">Fuente del análisis: reporte <b>Tiempos E-8</b> (Productividad X Circuito)</AlertTitle>
+        <AlertDescription className="leading-relaxed text-xs">
+          Este módulo se calcula <b>solo</b> con los archivos “Tiempos E-8” / “Productividad X Circuito” cargados en Carga de Datos —
+          no mezcla datos de H61, Ola ni Tiempos Muertos. Los reportes E-8 se generan por mes (julio, agosto, septiembre…),
+          por lo que el tablero toma únicamente los meses incluidos en esos archivos:
+          {' '}<b>{data.meses ?? (data.porMes ?? []).length} {data.meses === 1 ? 'mes' : 'meses'} con datos</b>{etiquetaPeriodo ? ` (${etiquetaPeriodo})` : ''}.
+          {(data.fuentes ?? []).length > 0 && (
+            <>
+              <br />
+              Archivos tomados en cuenta: {(data.fuentes ?? []).map((fu) => `${fu.filename ?? '(sin nombre)'} (${n(fu.rows)} filas)`).join(' · ')}
+            </>
+          )}
+        </AlertDescription>
+      </Alert>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi titulo="Bultos preparados" valor={k.bultos} icono={Boxes} detalle={`${n(k.registros)} registros ${data.desde ?? ''} → ${data.hasta ?? ''}`} />
         <Kpi titulo="% Tiempo muerto" valor={k.pctMuerto ?? 0} formato="decimal" unidad="%" icono={Timer} tono="alerta" detalle={`${n1(k.horasMuerto)} h muertas de ${n1(k.horasTotal)} h totales`} />

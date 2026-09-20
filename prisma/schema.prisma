@@ -109,15 +109,21 @@ model TiempoMuerto {
 
 // Eventos de picking (archivo grande subido por script Python)
 model PickingEvento {
-  id       Int      @id @default(autoincrement())
-  batch    String
-  fecha    DateTime
-  operario String
-  horaMin  Float?
-  bultos   Int?
-  soporte  String?
-  circuito String?
-  raw      String?
+  id        Int      @id @default(autoincrement())
+  batch     String
+  fecha     DateTime
+  operario  String
+  nombre    String?
+  horaMin   Float?
+  bultos    Int?
+  soporte   String?
+  circuito  String?
+  actividad String? // CODACT: actividad/circuito del WMS
+  zona      String? // ZONSTS: zona = nave
+  ubicacion String? // ALLSTS: pasillo/ubicacion
+  nivel     String? // NIVSTS: nivel
+  minutos   Float? // MINUTOS: duracion de la operacion
+  raw       String?
   @@index([fecha, operario])
   @@index([batch])
 }

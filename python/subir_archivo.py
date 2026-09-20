@@ -56,10 +56,16 @@ import requests
 MAPEO_PICKING = {
     "fecha": "FECHA",
     "operario": "CODUTI",
+    "nombre": "NOMUTI",
     "horaMin": "HORA",
     "bultos": "BULTOS",
     "soporte": None,    # el export no trae soporte/pallet; completar si se agrega
     "circuito": "CODACT",
+    "actividad": "CODACT",
+    "zona": "ZONSTS",      # zona = nave
+    "ubicacion": "ALLSTS", # pasillo/ubicacion
+    "nivel": "NIVSTS",
+    "minutos": "MINUTOS",  # duracion de la operacion (informativo)
 }
 
 TAMANIO_LOTE = 5000  # filas por request
@@ -102,10 +108,16 @@ def detectar_columnas(df: pd.DataFrame) -> dict:
     deteccion = {
         "fecha": MAPEO_PICKING["fecha"] or buscar(["FECHA", "DIA", "DATE", "FEC"]),
         "operario": MAPEO_PICKING["operario"] or buscar(["CODUTI", "OPERARIO", "LEGAJO", "USUARIO", "USER", "OP "]),
+        "nombre": MAPEO_PICKING.get("nombre") or buscar(["NOMUTI", "NOMBRE"]),
         "horaMin": MAPEO_PICKING["horaMin"] or buscar(["HORA", "TIME", "TS ", "TIMESTAMP"]),
         "bultos": MAPEO_PICKING["bultos"] or buscar(["BULTO", "CANTIDAD", "UNIDAD", "CANT", "QTY"]),
         "soporte": MAPEO_PICKING["soporte"] or buscar(["SOPORTE", "PALLET", "LPN", "SOP"]),
         "circuito": MAPEO_PICKING["circuito"] or buscar(["CODACT", "CIRCUITO", "ZONA", "CIRCU"]),
+        "actividad": MAPEO_PICKING.get("actividad") or buscar(["CODACT", "ACTIVIDAD"]),
+        "zona": MAPEO_PICKING.get("zona") or buscar(["ZONSTS", "ZONA", "NAVE"]),
+        "ubicacion": MAPEO_PICKING.get("ubicacion") or buscar(["ALLSTS", "UBICACION", "PASILLO", "CALLE"]),
+        "nivel": MAPEO_PICKING.get("nivel") or buscar(["NIVSTS", "NIVEL"]),
+        "minutos": MAPEO_PICKING.get("minutos") or buscar(["MINUTOS", "DURACION"]),
     }
     return deteccion
 

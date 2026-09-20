@@ -105,9 +105,38 @@ function mapTM(r: Record<string, unknown>) {
   }
 }
 
+// Auto-detección server-side de columnas de picking (cuando no hay mapping explícito,
+// ej. subida web directa). Estructura real del export WMS: CODUTI, NOMUTI, FECHA, HORA,
+// CODACT, ZONSTS, ALLSTS, DPLSTS, NIVSTS, CODPRO, PCBPRO, BULTOS, MINUTOS, ALERTA.
+export function autoMapPicking(muestra: Record<string, unknown>): PickingMapping {
+  const cols = Object.keys(muestra).map((k) => k.toUpperCase().replace(/[\s_]/g, ''))
+  const buscar = (...candidatos: string[]): string | undefined => {
+    for (const cand of candidatos) {
+      const hit = cols.find((c) => c.includes(cand))
+      if (hit != null) return Object.keys(muestra).find((k) => k.toUpperCase().replace(/[\s_]/g, '') === hit)
+    }
+    return undefined
+  }
+  return {
+    fecha: buscar('FECHA', 'DIA', 'DATE', 'FEC'),
+    operario: buscar('CODUTI', 'OPERARIO', 'LEGAJO', 'USUARIO'),
+    nombre: buscar('NOMUTI', 'NOMBRE'),
+    horaMin: buscar('HORA', 'TIME', 'TIMESTAMP'),
+    bultos: buscar('BULTO', 'CANTIDAD', 'UNIDAD', 'CANT', 'QTY'),
+    soporte: buscar('SOPORTE', 'PALLET', 'LPN'),
+    circuito: buscar('CODACT', 'CIRCUITO', 'CIRCU'),
+    actividad: buscar('CODACT', 'ACTIVIDAD'),
+    zona: buscar('ZONSTS', 'ZONA', 'NAVE'),
+    ubicacion: buscar('ALLSTS', 'UBICACION', 'PASILLO', 'CALLE'),
+    nivel: buscar('NIVSTS', 'NIVEL'),
+    minutos: buscar('MINUTOS', 'DURACION'),
+  }
+}
+
 function mapPicking(r: Record<string, unknown>, mapping: PickingMapping | null) {
+  const map = mapping ?? autoMapPicking(r)
   const src = (k: keyof PickingMapping): unknown =>
-    mapping && mapping[k] ? r[mapping[k] as string] : r[k]
+    map && map[k] ? r[map[k] as string] : r[k]
   const fecha = fechaDesdeYYYYMMDD(src('fecha'))
   if (!fecha) return null
   const operario = str(src('operario'))
@@ -136,10 +165,16 @@ function mapPicking(r: Record<string, unknown>, mapping: PickingMapping | null) 
   return {
     fecha,
     operario,
+    nombre: str(src('nombre')),
     horaMin,
     bultos: num(src('bultos')) == null ? null : Math.round(num(src('bultos')) as number),
     soporte: str(src('soporte')),
     circuito: str(src('circuito')),
+    actividad: str(src('actividad')),
+    zona: str(src('zona')),
+    ubicacion: str(src('ubicacion')),
+    nivel: str(src('nivel')),
+    minutos: num(src('minutos')),
     raw: JSON.stringify(r).slice(0, 2000),
   }
 }
@@ -147,10 +182,16 @@ function mapPicking(r: Record<string, unknown>, mapping: PickingMapping | null) 
 export interface PickingMapping {
   fecha?: string
   operario?: string
+  nombre?: string
   horaMin?: string
   bultos?: string
   soporte?: string
   circuito?: string
+  actividad?: string
+  zona?: string
+  ubicacion?: string
+  nivel?: string
+  minutos?: string
 }
 
 // ============ INGESTA ============
@@ -378,10 +419,13 @@ async function ingestTM(records: Iterable<Record<string, unknown>>) {
 }
 
 async function ingestPicking(records: Iterable<Record<string, unknown>>, mapping: PickingMapping | null, batch: string) {
-  const rows: ReturnType<typeof mapPicking>[] = []
+  const rows: (ReturnType<typeof mapPicking> & { batch: string })[] = []
   let errores = 0
+  // sin mapping explícito se auto-detecta una vez con la primera fila (mismo archivo = mismas columnas)
+  let mapResuelto = mapping
   for (const r of records) {
-    const m = mapPicking(r, mapping)
+    if (!mapResuelto) mapResuelto = autoMapPicking(r)
+    const m = mapPicking(r, mapResuelto)
     if (!m) { errores++; continue }
     rows.push({ ...m, batch })
   }

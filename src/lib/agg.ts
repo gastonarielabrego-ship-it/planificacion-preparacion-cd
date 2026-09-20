@@ -264,6 +264,7 @@ export async function getH61(f: Filtros) {
     horasExtras: opsExtras.reduce((a, r) => a + r.extras, 0),
     bultosExtras: opsExtras.reduce((a, r) => a + r.bultosExtras, 0),
     bultosTotales: ops.reduce((a, r) => a + r.bultos, 0),
+    pctBultosExtras: 0,
   }
   extrasResumen.pctBultosExtras = extrasResumen.bultosTotales ? +((extrasResumen.bultosExtras / extrasResumen.bultosTotales) * 100).toFixed(1) : 0
 
@@ -898,18 +899,27 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
 }
 
 // ============ PICKING ============
+// Metricas sobre eventos de picking (1 evento = levante en una ubicacion con hora).
+// Modelo de tiempos por operario-dia (umbral muerto = 2 min, consistente con los rangos del grafico):
+//   tiempo total   = primer -> ultimo evento del dia (jornada observada)
+//   tiempo muerto  = suma de gaps > 2 min (inactividad evidente)
+//   tiempo neto    = total - muerto
+//   super neto     = tiempo de operacion WMS (suma de MINUTOS si viene en el archivo), acotado al neto;
+//                    sin columna MINUTOS, super neto = neto
+//   traslados      = neto - super neto (ciclo de movimiento entre ubicaciones)
+const UMBRAL_MUERTO_PICKING = 2
+
 export async function getPicking(f: Filtros) {
   const where = { fecha: rango(f) }
-  const [count, ops] = await Promise.all([
-    db.pickingEvento.count({ where }),
-    db.pickingEvento.findMany({ where, orderBy: [{ fecha: 'asc' }, { operario: 'asc' }, { horaMin: 'asc' }], select: { fecha: true, operario: true, horaMin: true, bultos: true, soporte: true, circuito: true } }),
-  ])
+  const count = await db.pickingEvento.count({ where })
+  if (!count) return { registros: 0, vacio: true as const }
 
-  if (!count) {
-    return { registros: 0, vacio: true as const }
-  }
+  const rows = await db.pickingEvento.findMany({
+    where,
+    orderBy: [{ fecha: 'asc' }, { operario: 'asc' }, { horaMin: 'asc' }],
+    select: { fecha: true, operario: true, nombre: true, horaMin: true, bultos: true, soporte: true, circuito: true, actividad: true, zona: true, ubicacion: true, nivel: true, minutos: true },
+  })
 
-  // gaps entre eventos consecutivos por operario y dia
   const buckets = [
     { label: '0-1 min', min: 0, max: 1 },
     { label: '1-2 min', min: 1, max: 2 },
@@ -919,61 +929,204 @@ export async function getPicking(f: Filtros) {
     { label: '20-60 min', min: 20, max: 60 },
     { label: '> 60 min', min: 60, max: Infinity },
   ]
+
+  // acumuladores globales
+  const gaps: number[] = []
   const gapCounts = new Array(buckets.length).fill(0)
-  const soporteGapCounts = new Array(buckets.length).fill(0)
-  let gapSum = 0, gapN = 0, soporteGapSum = 0, soporteGapN = 0, cambiosSoporte = 0
-  const opAgg = new Map<string, { nombre: string; eventos: number; gapSum: number; gapN: number; cambioSop: number; bultos: number }>()
-  const serDia = new Map<string, { eventos: number; gapMin: number }>()
+  const trasladoGaps: number[] = []
+  const trasladoCounts = new Array(buckets.length).fill(0)
+  let spanTotal = 0, muertoTotal = 0, minutosTotal = 0, cambiosUbic = 0, cambiosSoporte = 0
+  const paresZona = new Map<string, { desde: string; hasta: string; suma: number; n: number }>()
 
-  let prev: { operario: string; key: string; horaMin: number; soporte: string | null } | null = null
-  for (const r of ops) {
-    const opKey = r.operario
-    let o = opAgg.get(opKey)
-    if (!o) { o = { nombre: opKey, eventos: 0, gapSum: 0, gapN: 0, cambioSop: 0, bultos: 0 }; opAgg.set(opKey, o) }
-    o.eventos += 1
-    o.bultos += r.bultos ?? 0
-    const k = r.fecha.toISOString().slice(0, 10)
-    let s = serDia.get(k)
-    if (!s) { s = { eventos: 0, gapMin: 0 }; serDia.set(k, s) }
-    s.eventos += 1
+  const porOp = new Map<string, { nombre: string | null; eventos: number; bultos: number; span: number; muerto: number; minutos: number; dias: number; cambioUbic: number; ubicUnicas: Set<string> }>()
+  const porZona = new Map<string, { bultos: number; eventos: number; ops: Set<string>; dias: Set<string> }>()
+  const porAct = new Map<string, { bultos: number; eventos: number; ops: Set<string>; opsPorDia: Map<string, Set<string>> }>()
+  const serDia = new Map<string, { eventos: number; bultos: number; gapMin: number; gapN: number }>()
+  const recorridos: { fecha: string; operario: string; nombre: string | null; ubicaciones: number; zonas: number; eventos: number; bultos: number; spanMin: number; muertoMin: number; trasladosMin: number }[] = []
 
-    if (prev && prev.operario === opKey && prev.key === k && r.horaMin != null && prev.horaMin != null) {
-      const gap = Math.max(0, r.horaMin - prev.horaMin)
-      if (gap > 720) {
-        // salto de jornada (>12 h): no es tiempo muerto, se ignora para las metricas
-        prev = { operario: opKey, key: k, horaMin: r.horaMin ?? -1, soporte: r.soporte }
-        continue
-      }
-      const bi = buckets.findIndex((b) => gap >= b.min && gap < b.max)
-      if (bi >= 0) gapCounts[bi]++
-      gapSum += gap; gapN++
-      s.gapMin += gap
-      o.gapSum += gap; o.gapN++
-      const cambioSop = prev.soporte != null && r.soporte != null && prev.soporte !== r.soporte
-      if (cambioSop) {
-        cambiosSoporte++
-        if (bi >= 0) soporteGapCounts[bi]++
-        soporteGapSum += gap; soporteGapN++
-        o.cambioSop++
-      }
+  type PickingRow = (typeof rows)[number]
+
+  const ubicDe = (e: PickingRow): string | null =>
+    [e.zona, e.ubicacion, e.nivel].filter(Boolean).join('-') || null
+
+  // procesa el bloque contiguo de eventos de un operario en un dia (ordenado por hora)
+  const procesarDia = (evs: PickingRow[]) => {
+    if (!evs.length) return
+    const fechaISO = dia(evs[0].fecha)
+    const operario = evs[0].operario
+    const nombre = evs.find((e) => e.nombre)?.nombre ?? null
+    const bultosDia = evs.reduce((a, e) => a + (e.bultos ?? 0), 0)
+
+    const conHora = evs.filter((e) => e.horaMin != null) as (PickingRow & { horaMin: number })[]
+    const ubicSet = new Set<string>()
+    const zonaSet = new Set<string>()
+    for (const e of evs) {
+      const ub = ubicDe(e)
+      if (ub) ubicSet.add(ub)
+      if (e.zona) zonaSet.add(e.zona)
     }
-    prev = { operario: opKey, key: k, horaMin: r.horaMin ?? -1, soporte: r.soporte }
+
+    let span = 0, muertoDia = 0, minutosDia = 0, cambioUbicDia = 0, diaGapSum = 0, diaGapN = 0
+    let prev: { horaMin: number; ubic: string | null; zona: string | null; sop: string | null } | null = null
+    for (const e of conHora) {
+      const ubic = ubicDe(e)
+      minutosDia += e.minutos ?? 0
+      if (prev) {
+        const gap = Math.max(0, e.horaMin - prev.horaMin)
+        if (gap <= 720) {
+          // salto de jornada (>12 h) se ignora; el resto entra al analisis
+          gaps.push(gap)
+          diaGapSum += gap; diaGapN++
+          const bi = buckets.findIndex((b) => gap >= b.min && gap < b.max)
+          if (bi >= 0) gapCounts[bi]++
+          if (gap > UMBRAL_MUERTO_PICKING) muertoDia += gap
+          const cambioUb = prev.ubic != null && ubic != null && prev.ubic !== ubic
+          if (cambioUb) {
+            cambioUbicDia++
+            trasladoGaps.push(gap)
+            const ti = buckets.findIndex((b) => gap >= b.min && gap < b.max)
+            if (ti >= 0) trasladoCounts[ti]++
+            if (prev.zona && e.zona && prev.zona !== e.zona) {
+              const pk = `${prev.zona}|${e.zona}`
+              let p = paresZona.get(pk)
+              if (!p) { p = { desde: prev.zona, hasta: e.zona, suma: 0, n: 0 }; paresZona.set(pk, p) }
+              p.suma += gap; p.n++
+            }
+          }
+          if (prev.sop != null && e.soporte != null && prev.sop !== e.soporte) cambiosSoporte++
+        }
+      }
+      prev = { horaMin: e.horaMin, ubic, zona: e.zona ?? null, sop: e.soporte ?? null }
+    }
+    if (conHora.length >= 2) span = Math.max(0, conHora[conHora.length - 1].horaMin - conHora[0].horaMin)
+
+    // operario
+    let o = porOp.get(operario)
+    if (!o) { o = { nombre, eventos: 0, bultos: 0, span: 0, muerto: 0, minutos: 0, dias: 0, cambioUbic: 0, ubicUnicas: new Set() }; porOp.set(operario, o) }
+    if (nombre && !o.nombre) o.nombre = nombre
+    o.eventos += evs.length; o.bultos += bultosDia; o.span += span; o.muerto += muertoDia; o.minutos += minutosDia
+    o.dias += 1; o.cambioUbic += cambioUbicDia
+    for (const u of ubicSet) o.ubicUnicas.add(u)
+
+    // zonas (naves) y actividades
+    for (const e of evs) {
+      const zk = e.zona || '(sin zona)'
+      let z = porZona.get(zk)
+      if (!z) { z = { bultos: 0, eventos: 0, ops: new Set(), dias: new Set() }; porZona.set(zk, z) }
+      z.bultos += e.bultos ?? 0; z.eventos += 1; z.ops.add(operario); z.dias.add(fechaISO)
+
+      const ak = (e.actividad || e.circuito || '(sin actividad)').toUpperCase()
+      let a = porAct.get(ak)
+      if (!a) { a = { bultos: 0, eventos: 0, ops: new Set(), opsPorDia: new Map() }; porAct.set(ak, a) }
+      a.bultos += e.bultos ?? 0; a.eventos += 1; a.ops.add(operario)
+      let sd = a.opsPorDia.get(fechaISO)
+      if (!sd) { sd = new Set(); a.opsPorDia.set(fechaISO, sd) }
+      sd.add(operario)
+    }
+
+    let s = serDia.get(fechaISO)
+    if (!s) { s = { eventos: 0, bultos: 0, gapMin: 0, gapN: 0 }; serDia.set(fechaISO, s) }
+    s.eventos += evs.length; s.bultos += bultosDia; s.gapMin += diaGapSum; s.gapN += diaGapN
+
+    recorridos.push({
+      fecha: fechaISO, operario, nombre,
+      ubicaciones: ubicSet.size, zonas: zonaSet.size,
+      eventos: evs.length, bultos: bultosDia,
+      spanMin: span, muertoMin: muertoDia, trasladosMin: 0,
+    })
+
+    spanTotal += span; muertoTotal += muertoDia; minutosTotal += minutosDia
+    cambiosUbic += cambioUbicDia
   }
 
-  const serie = [...serDia.entries()].sort().map(([fecha, v]) => ({ fecha, eventos: v.eventos, gapPromedio: v.eventos > 1 ? +(v.gapMin / (v.eventos - 1)).toFixed(2) : null }))
+  // agrupar por (fecha, operario): rows ya viene ordenado, los grupos son contiguos
+  let grupoKey = ''
+  let grupo: PickingRow[] = []
+  for (const r of rows) {
+    const k = `${dia(r.fecha)}|${r.operario}`
+    if (k !== grupoKey) {
+      procesarDia(grupo)
+      grupo = []
+      grupoKey = k
+    }
+    grupo.push(r)
+  }
+  procesarDia(grupo)
+
+  const medianaDe = (arr: number[]): number | null => {
+    if (!arr.length) return null
+    const s = [...arr].sort((a, b) => a - b)
+    const mid = Math.floor(s.length / 2)
+    return s.length % 2 ? +s[mid].toFixed(2) : +((s[mid - 1] + s[mid]) / 2).toFixed(2)
+  }
+  const horas = (min: number) => +(min / 60).toFixed(2)
+  const bultosTotal = rows.reduce((a, e) => a + (e.bultos ?? 0), 0)
+  const netoTotal = Math.max(0, spanTotal - muertoTotal)
+  // super neto: tiempo de operacion WMS (MINUTOS) acotado al neto; sin MINUTOS, super neto = neto
+  const superNetoTotal = minutosTotal > 0 ? Math.min(minutosTotal, netoTotal) : netoTotal
+  const trasladosNetoTotal = netoTotal - superNetoTotal
+
+  const opsRanking = [...porOp.entries()].map(([operario, o]) => {
+    const neto = Math.max(0, o.span - o.muerto)
+    const superNeto = o.minutos > 0 ? Math.min(o.minutos, neto) : neto
+    return {
+      operario,
+      nombre: o.nombre ?? operario,
+      dias: o.dias,
+      eventos: o.eventos,
+      bultos: o.bultos,
+      horasTotal: horas(o.span),
+      pctMuerto: o.span ? r1((o.muerto / o.span) * 100) : null,
+      prodTotal: o.span ? r2(o.bultos / (o.span / 60)) : null,
+      prodNeta: neto ? r2(o.bultos / (neto / 60)) : null,
+      prodSuperNeta: superNeto ? r2(o.bultos / (superNeto / 60)) : null,
+      ubicUnicas: o.ubicUnicas.size,
+      traslados: o.cambioUbic,
+    }
+  })
+  const topColaborador = [...opsRanking].sort((a, b) => b.bultos - a.bultos)[0] ?? null
 
   return {
     registros: count,
     vacio: false as const,
-    operarios: opAgg.size,
-    gapPromedio: gapN ? +(gapSum / gapN).toFixed(2) : null,
-    gapMedianaEst: gapN ? +(gapSum / gapN).toFixed(2) : null,
-    cambiosSoporte,
-    gapPromedioCambioSoporte: soporteGapN ? +(soporteGapSum / soporteGapN).toFixed(2) : null,
+    desde: dia(rows[0].fecha),
+    hasta: dia(rows[rows.length - 1].fecha),
+    umbralMuertoMin: UMBRAL_MUERTO_PICKING,
+    conUbicacion: cambiosUbic > 0,
+    bultos: bultosTotal,
+    operarios: porOp.size,
+    gapPromedio: gaps.length ? +(gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(2) : null,
+    gapMediana: medianaDe(gaps),
     distribucionGaps: buckets.map((b, i) => ({ bucket: b.label, cantidad: gapCounts[i] })),
-    distribucionGapsSoporte: buckets.map((b, i) => ({ bucket: b.label, cantidad: soporteGapCounts[i] })),
-    operariosTop: [...opAgg.values()].filter((o) => o.gapN > 30).map((o) => ({ operario: o.nombre, eventos: o.eventos, bultos: o.bultos, gapPromedio: +(o.gapSum / o.gapN).toFixed(2), cambiosSoporte: o.cambioSop })).sort((a, b) => b.eventos - a.eventos).slice(0, 15),
-    serie,
+    cambiosUbicacion: cambiosUbic,
+    trasladoPromedio: trasladoGaps.length ? +(trasladoGaps.reduce((a, b) => a + b, 0) / trasladoGaps.length).toFixed(2) : null,
+    trasladoMediana: medianaDe(trasladoGaps),
+    distribucionTraslados: buckets.map((b, i) => ({ bucket: b.label, cantidad: trasladoCounts[i] })),
+    cambiosSoporte,
+    tiempos: {
+      horasTotal: horas(spanTotal),
+      horasMuerto: horas(muertoTotal),
+      horasNeto: horas(netoTotal),
+      horasTraslados: horas(trasladosNetoTotal),
+      horasSuperNeto: horas(superNetoTotal),
+      pctMuerto: spanTotal ? r1((muertoTotal / spanTotal) * 100) : null,
+      conMinutos: minutosTotal > 0,
+    },
+    productividad: {
+      total: spanTotal ? r2(bultosTotal / (spanTotal / 60)) : null,
+      neta: netoTotal ? r2(bultosTotal / (netoTotal / 60)) : null,
+      superNeta: superNetoTotal ? r2(bultosTotal / (superNetoTotal / 60)) : null,
+    },
+    topColaborador,
+    operariosTop: [...opsRanking].sort((a, b) => b.bultos - a.bultos).slice(0, 15),
+    porZona: [...porZona.entries()].map(([zona, z]) => ({ zona, bultos: z.bultos, eventos: z.eventos, operarios: z.ops.size, dias: z.dias.size })).sort((a, b) => b.bultos - a.bultos),
+    porActividad: [...porAct.entries()].map(([actividad, a]) => {
+      const personasDia = [...a.opsPorDia.values()].reduce((acc, s) => acc + s.size, 0)
+      return { actividad, bultos: Math.round(a.bultos), eventos: a.eventos, operarios: a.ops.size, personasPromedioDia: a.opsPorDia.size ? +(personasDia / a.opsPorDia.size).toFixed(1) : null }
+    }).sort((a, b) => b.bultos - a.bultos),
+    recorridosTop: recorridos.filter((r) => r.eventos >= 3).sort((a, b) => b.ubicaciones - a.ubicaciones || b.spanMin - a.spanMin).slice(0, 12),
+    paresZona: [...paresZona.values()].filter((p) => p.n >= 5).map((p) => ({ desde: p.desde, hasta: p.hasta, trasladoPromedio: +(p.suma / p.n).toFixed(2), cantidad: p.n })).sort((a, b) => b.trasladoPromedio - a.trasladoPromedio).slice(0, 10),
+    serie: [...serDia.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([fecha, v]) => ({ fecha, eventos: v.eventos, bultos: v.bultos, gapPromedio: v.gapN ? +(v.gapMin / v.gapN).toFixed(2) : null })),
   }
 }
 
@@ -1062,11 +1215,21 @@ export async function getProdCirc(f: Filtros) {
     .sort((a, b) => b.bultos - a.bultos)
     .slice(0, 15)
 
+  // archivos fuente cargados (para aclarar de donde salen los datos)
+  const fuentes = await db.uploadBatch.findMany({
+    where: { tipo: 'prodcirc' },
+    orderBy: { createdAt: 'desc' },
+    take: 6,
+    select: { filename: true, rows: true, createdAt: true },
+  })
+
   return {
     registros: tot._count,
     vacio: false as const,
     desde: tot._min.fecha ? dia(tot._min.fecha) : undefined,
     hasta: tot._max.fecha ? dia(tot._max.fecha) : undefined,
+    meses: porMes.length,
+    fuentes: fuentes.map((f) => ({ filename: f.filename, rows: f.rows, fecha: f.createdAt.toISOString() })),
     kpis,
     porSector,
     porMes,
