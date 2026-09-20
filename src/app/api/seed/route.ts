@@ -14,8 +14,7 @@ const PATRONES: Record<TipoCarga, RegExp> = {
   ola: /ola/i,
   h61: /h61/i,
   tm: /(muertos|tm)/i,
-  picking: /(picking|pick)/i,
-  prodcirc: /(circuito|productividad|tiempos|e-?\d)/i,
+  picking: /(picking|piking|pickeo|e-?8)/i,
 }
 
 export async function POST(req: NextRequest) {

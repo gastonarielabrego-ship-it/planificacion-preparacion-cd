@@ -18,15 +18,13 @@ interface StatusData {
   h61: { registros: number; desde: string | null; hasta: string | null }
   tm: { registros: number; desde: string | null; hasta: string | null }
   picking: { registros: number; desde: string | null; hasta: string | null }
-  prodcirc: { registros: number; desde: string | null; hasta: string | null }
 }
 
 const TARJETAS = [
   { tipo: 'ola', titulo: 'Ola y Pendiente', desc: 'Bultos a preparar por día (matriz mensual). Archivo: “Ola y Pendiente (1).xlsx”', color: 'bg-emerald-100 text-emerald-800' },
   { tipo: 'h61', titulo: 'H61 — Preparación por hora', desc: 'Producción por hora de cada colaborador (8 h vs 12 h/extras + actividad). Se sube por partes automáticamente, sin límite de tamaño', color: 'bg-teal-100 text-teal-800' },
   { tipo: 'tm', titulo: 'Tiempos muertos', desc: 'Eventos con motivo y observación; se agrupan automáticamente (APRO, NAVE, PASILLO, UBICACIÓN…). Archivo: “tiempos muertos pasado.xlsx”', color: 'bg-amber-100 text-amber-800' },
-  { tipo: 'picking', titulo: 'Producción por picking', desc: 'Log de picking para estimar tiempo muerto entre pickings y entre soportes. Archivo grande: se sube por partes automáticamente', color: 'bg-rose-100 text-rose-800' },
-  { tipo: 'prodcirc', titulo: 'Productividad X Circuito', desc: 'Tiempos (total/muerto/neto/super neto) y producción por colaborador, sector, día y turno. Archivos: “Productividad X Circuito…”, “Tiempos E-8…” (se acumulan, no se reemplazan)', color: 'bg-indigo-100 text-indigo-800' },
+  { tipo: 'picking', titulo: 'Picking (E-8)', desc: 'Reporte E-8 de producción por picking: tiempo muerto entre levantes, bultos por zona (naves), personas por actividad, recorridos, traslados y productividad neta / super neta. Archivos: “produccion picking…”, “Tiempos E-8…”. Archivo grande: se sube por partes automáticamente', color: 'bg-rose-100 text-rose-800' },
 ]
 
 const TAM_PARTE = 2 * 1024 * 1024 // 2 MB crudos por parte (~2,7 MB en base64, bajo el límite de Vercel)

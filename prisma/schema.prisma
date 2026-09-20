@@ -129,30 +129,6 @@ model PickingEvento {
 }
 
 
-// Productividad por colaborador y sector (archivos "Productividad X Circuito" / "Tiempos E-8")
-model ProdCircuito {
-  id              Int      @id @default(autoincrement())
-  fecha           DateTime
-  turno           String   @default("")
-  operario        String
-  nombre          String?
-  sector          String   @default("")
-  tipo            String   @default("")
-  soportes        Float?
-  lineas          Float?
-  bultos          Float?
-  tiempoTotal     Float?
-  tiempoMuerto    Float?
-  tiempoNeto      Float?
-  tiempoSuperNeto Float?
-  prodTotal       Float?
-  prodNeto        Float?
-  prodSuperNeto   Float?
-  @@unique([fecha, turno, operario, sector, tipo])
-  @@index([fecha])
-  @@index([sector])
-}
-
 // Feriados nacionales de Argentina (fuente: api.argentinadatos.com.ar)
 model Feriado {
   id     Int      @id @default(autoincrement())

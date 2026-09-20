@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Warehouse, BarChart3, CalendarRange, Gauge, Timer, Boxes, UploadCloud, Factory, Waves, Activity } from 'lucide-react'
+import { Warehouse, BarChart3, CalendarRange, Gauge, Timer, Boxes, UploadCloud, Waves, Activity } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ResumenTab } from '@/components/dash/resumen'
 import { OlaTab } from '@/components/dash/ola'
@@ -10,7 +10,6 @@ import { PlanificacionTab } from '@/components/dash/planificacion'
 import { ProductividadTab } from '@/components/dash/productividad'
 import { TiemposMuertosTab } from '@/components/dash/tiemposmuertos'
 import { PickingTab } from '@/components/dash/picking'
-import { ProdCircTab } from '@/components/dash/prodcirc'
 import { CargaDatosTab } from '@/components/dash/cargadatos'
 
 export default function Home() {
@@ -38,9 +37,8 @@ export default function Home() {
             <TabsTrigger value="capacidad" className="gap-1.5"><Activity className="h-4 w-4" /> Capacidad H61</TabsTrigger>
             <TabsTrigger value="planificacion" className="gap-1.5"><CalendarRange className="h-4 w-4" /> Planificación</TabsTrigger>
             <TabsTrigger value="productividad" className="gap-1.5"><Gauge className="h-4 w-4" /> Productividad H61</TabsTrigger>
-            <TabsTrigger value="prodcirc" className="gap-1.5"><Factory className="h-4 w-4" /> Prod. X Circuito</TabsTrigger>
+            <TabsTrigger value="picking" className="gap-1.5"><Boxes className="h-4 w-4" /> Picking (E-8)</TabsTrigger>
             <TabsTrigger value="tm" className="gap-1.5"><Timer className="h-4 w-4" /> Tiempos muertos</TabsTrigger>
-            <TabsTrigger value="picking" className="gap-1.5"><Boxes className="h-4 w-4" /> Picking</TabsTrigger>
             <TabsTrigger value="carga" className="gap-1.5"><UploadCloud className="h-4 w-4" /> Carga de Datos</TabsTrigger>
           </TabsList>
 
@@ -49,9 +47,8 @@ export default function Home() {
           <TabsContent value="capacidad"><CapacidadTab /></TabsContent>
           <TabsContent value="planificacion"><PlanificacionTab /></TabsContent>
           <TabsContent value="productividad"><ProductividadTab /></TabsContent>
-          <TabsContent value="prodcirc"><ProdCircTab /></TabsContent>
-          <TabsContent value="tm"><TiemposMuertosTab /></TabsContent>
           <TabsContent value="picking"><PickingTab /></TabsContent>
+          <TabsContent value="tm"><TiemposMuertosTab /></TabsContent>
           <TabsContent value="carga"><CargaDatosTab /></TabsContent>
         </Tabs>
       </main>

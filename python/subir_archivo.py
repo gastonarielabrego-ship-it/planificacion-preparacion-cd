@@ -8,7 +8,7 @@ MODO 1 — CARPETA (recomendado): detecta automáticamente qué archivo es cada 
 
     Reconoce por nombre de archivo (sin importar mayúsculas):
         H61...                          -> h61      (producción por hora por operario)
-        ...picking / piking...          -> picking  (producción por picking, va por lotes)
+        ...picking / piking / E-8...    -> picking  (reporte E-8, producción por picking, va por lotes)
         ...muertos / muerto / TM...     -> tm       (tiempos muertos)
         ...Ola / Pendiente...           -> ola      (matriz mensual; se transforma automáticamente)
 
@@ -75,19 +75,17 @@ TAMANIO_LOTE = 5000  # filas por request
 # Detección de tipo por nombre de archivo
 # ---------------------------------------------------------------------------
 def detectar_tipo(nombre_archivo: str):
-    """Devuelve 'h61'|'picking'|'tm'|'ola'|'prodcirc' según el nombre del archivo, o None."""
+    """Devuelve 'h61'|'picking'|'tm'|'ola' según el nombre del archivo, o None."""
     n = nombre_archivo.lower()
     for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         n = n.replace(a, b)
     if "h61" in n:
         return "h61"
-    if "picking" in n or "piking" in n or "pickeo" in n:
+    # picking = reporte E-8 (producción por picking)
+    if "picking" in n or "piking" in n or "pickeo" in n or re.search(r"\be-?8\b", n):
         return "picking"
     if "muerto" in n or re.search(r"\btm\b", n):
         return "tm"
-    # Productividad X Circuito / Tiempos E-8 (julio, agosto, septiembre...) -> prodcirc
-    if "tiempos" in n or "circuito" in n or "productividad" in n or re.search(r"\be-?\d\b", n):
-        return "prodcirc"
     if "ola" in n or "pendiente" in n:
         return "ola"
     return None
@@ -273,18 +271,6 @@ def _serializar_valor(v):
     return v
 
 
-def leer_prodcirc(ruta: str):
-    """Lee el archivo de Productividad X Circuito / Tiempos E-8 en crudo (JSON-safe).
-    El servidor mapea los encabezados originales (Columna1, 'Tiempo Muerto', PROD_TOTAL...)."""
-    if ruta.lower().endswith(".csv"):
-        df = pd.read_csv(ruta, sep=None, engine="python", low_memory=False)
-    else:
-        hojas = pd.read_excel(ruta, sheet_name=None)
-        df = pd.concat(hojas.values(), ignore_index=True)
-    df.columns = [str(c).strip() for c in df.columns]
-    return [{k: _serializar_valor(v) for k, v in fila.items()} for fila in df.to_dict(orient="records")]
-
-
 # ---------------------------------------------------------------------------
 # Carga de un archivo
 # ---------------------------------------------------------------------------
@@ -294,14 +280,7 @@ def cargar(tipo: str, ruta: str, base: str, lote: int, auto: bool, reemplazar: b
         print("   [ERROR] no existe el archivo")
         return False
 
-    if tipo == "prodcirc":
-        print("   Leyendo productividad por circuito (Tiempos E-8 / Productividad X Circuito)…")
-        rows = leer_prodcirc(ruta)
-        if rows:
-            print(f"   {len(rows):,} filas x {len(rows[0])} columnas")
-            print("   Se acumulan con lo ya cargado (deduplica por fecha+turno+operario+sector+tipo).")
-        mapping = None
-    elif tipo == "ola" and not ruta.lower().endswith(".csv"):
+    if tipo == "ola" and not ruta.lower().endswith(".csv"):
         print("   Convirtiendo matriz mensual a registros diarios…")
         rows = preparar_ola(ruta)
         if not rows:
@@ -337,7 +316,7 @@ def cargar(tipo: str, ruta: str, base: str, lote: int, auto: bool, reemplazar: b
     batch_id = f"py-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     url = f"{base}/api/batch"
     headers = {"Content-Type": "application/json"}
-    incremental = tipo in ("picking", "prodcirc")  # por lotes
+    incremental = tipo == "picking"  # por lotes
     reemplazar_unico = not incremental  # h61/ola/tm: un solo lote con reemplazo
 
     total_ok = 0
@@ -357,8 +336,8 @@ def cargar(tipo: str, ruta: str, base: str, lote: int, auto: bool, reemplazar: b
         for i in range(0, len(rows), lote):
             lote_rows = rows[i:i + lote]
             es_final = (i + lote) >= len(rows)
-            # picking: el primer lote reemplaza lo anterior; prodcirc: solo con --reemplazar
-            reemplaza_este = (i == 0) and (reemplazar if tipo == "prodcirc" else True)
+            # picking: el primer lote reemplaza lo anterior
+            reemplaza_este = i == 0
             body = {"tipo": tipo, "rows": lote_rows, "filename": os.path.basename(ruta),
                     "batchId": batch_id, "mapping": mapping, "final": es_final,
                     "reemplazar": reemplaza_este}
@@ -447,13 +426,13 @@ def main():
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--carpeta", help="carpeta con los archivos (detecta el tipo de cada uno)")
     src.add_argument("--archivo", help="ruta de un único archivo .xlsx/.xls/.csv")
-    ap.add_argument("--tipo", choices=["picking", "h61", "ola", "tm", "prodcirc"], help="tipo de carga (solo con --archivo)")
+    ap.add_argument("--tipo", choices=["picking", "h61", "ola", "tm"], help="tipo de carga (solo con --archivo)")
     ap.add_argument("--url", default="http://localhost:3000", help="URL base de la app (default: http://localhost:3000)")
     ap.add_argument("--hoja", default=None, help="nombre de la hoja (xlsx); default: todas/primera")
     ap.add_argument("--lote", type=int, default=TAMANIO_LOTE, help=f"filas por lote en picking (default {TAMANIO_LOTE})")
     ap.add_argument("--auto", action="store_true", help="no pedir confirmaciones (ideal para el .bat)")
     ap.add_argument("--solo-listar", action="store_true", help="modo carpeta: solo muestra qué detecta, no sube")
-    ap.add_argument("--reemplazar", action="store_true", help="prodcirc: borra lo cargado antes de insertar (picking siempre reemplaza)")
+    ap.add_argument("--reemplazar", action="store_true", help="(deprecado, se ignora: picking siempre reemplaza lo anterior)")
     args = ap.parse_args()
 
     if args.carpeta:

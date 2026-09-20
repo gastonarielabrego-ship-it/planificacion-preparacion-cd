@@ -15,6 +15,8 @@ interface PickingData {
   vacio?: boolean
   desde?: string
   hasta?: string
+  meses?: number
+  fuentes?: { filename: string | null; rows: number; fecha: string }[]
   umbralMuertoMin?: number
   conUbicacion?: boolean
   bultos?: number
@@ -46,14 +48,16 @@ export function PickingTab() {
       <div className="space-y-4">
         <Alert>
           <UploadCloud className="h-4 w-4" />
-          <AlertTitle>Módulo listo — esperando el archivo de producción por picking</AlertTitle>
+          <AlertTitle>Módulo Picking (E-8) — esperando el archivo</AlertTitle>
           <AlertDescription className="leading-relaxed">
-            Cuando lo cargues, este módulo calcula: <b>tiempo muerto promedio y mediana entre pickings</b>, bultos por zona (naves),
-            personas asignadas a cada actividad, <b>recorridos más largos</b>, tiempo de traslado entre ubicaciones,
-            top colaborador y <b>productividad neta y super neta</b>.
+            Este módulo toma el <b>reporte E-8</b> (producción por picking / log WMS). Cuando lo cargues calcula:
+            <b> tiempo muerto promedio y mediana entre pickings</b>, bultos por zona (naves), personas asignadas a cada
+            actividad, <b>recorridos más largos</b>, tiempo de traslado entre ubicaciones, top colaborador y
+            <b> productividad neta y super neta</b>.
             <br />
-            Se reconoce automáticamente por el nombre (que incluya “picking”, “piking” o “pickeo”). Podés subirlo directo acá
-            (se envía por partes automáticamente, sin límite de tamaño) o con el script <code className="rounded bg-muted px-1">subir_archivo.py</code>.
+            Se reconoce automáticamente por el nombre (que incluya “picking”, “piking”, “pickeo” o “E-8”). Podés subirlo
+            directo acá (se envía por partes automáticamente, sin límite de tamaño) o con el script
+            <code className="rounded bg-muted px-1">subir_archivo.py</code>.
           </AlertDescription>
         </Alert>
         <SinDatos mensaje="No hay eventos de picking cargados todavía." />
@@ -69,6 +73,18 @@ export function PickingTab() {
 
   return (
     <div className="space-y-4">
+      <Alert>
+        <Boxes className="h-4 w-4" />
+        <AlertTitle className="text-sm">Fuente del análisis: reporte E-8 (producción por picking)</AlertTitle>
+        <AlertDescription className="text-xs leading-relaxed">
+          Período con datos: <b>{data.desde ? `${fechaCorta(data.desde)} → ${fechaCorta(data.hasta)}` : '—'}</b>
+          {data.meses != null && <> · <b>{data.meses}</b> {data.meses === 1 ? 'mes' : 'meses'}</>}
+          {(data.fuentes ?? []).length > 0 && (
+            <> · Archivos tomados en cuenta: {(data.fuentes ?? []).map((f) => f.filename || '(sin nombre)').join(', ')}</>
+          )}
+        </AlertDescription>
+      </Alert>
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi titulo="Eventos de picking" valor={data.registros} icono={Boxes} detalle={data.desde ? `${fechaCorta(data.desde)} → ${fechaCorta(data.hasta)}` : undefined} />
         <Kpi titulo="Operarios" valor={data.operarios ?? 0} icono={User} />

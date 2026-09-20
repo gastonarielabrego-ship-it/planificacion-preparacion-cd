@@ -3,7 +3,7 @@
 import { db } from '@/lib/db'
 import { clasificarMotivo } from '@/lib/normaliza'
 
-export type TipoCarga = 'ola' | 'h61' | 'tm' | 'picking' | 'prodcirc'
+export type TipoCarga = 'ola' | 'h61' | 'tm' | 'picking'
 
 const chunk = <T,>(arr: T[], n: number): T[][] => {
   const out: T[][] = []
@@ -215,7 +215,6 @@ async function clearTipo(tipo: TipoCarga) {
     await db.h61Actividad.deleteMany({})
   } else if (tipo === 'tm') await db.tiempoMuerto.deleteMany({})
   else if (tipo === 'picking') await db.pickingEvento.deleteMany({})
-  else if (tipo === 'prodcirc') await db.prodCircuito.deleteMany({})
 }
 
 // Ingesta de OLA (fila por dia)
@@ -433,76 +432,7 @@ async function ingestPicking(records: Iterable<Record<string, unknown>>, mapping
   return { insertados: rows.length, errores, rows }
 }
 
-// Ingesta de PRODUCTIVIDAD POR CIRCUITO/SECTOR ("Productividad X Circuito", "Tiempos E-8"):
-// fila por colaborador-dia-turno-sector con tiempos (total/muerto/neto/super neto) y produccion.
-// Acepta los encabezados originales (Columna1, NOMUTI, 'Tiempo Muerto', PROD_TOTAL, ...) o canonicos.
-function mapProdCirc(r: Record<string, unknown>) {
-  // lookup insensible a mayusculas/espacios/guiones bajos
-  const norm: Record<string, unknown> = {}
-  for (const k of Object.keys(r)) norm[k.toUpperCase().replace(/[\s_]/g, '')] = r[k]
-  const g = (...claves: string[]): unknown => {
-    for (const c of claves) {
-      const v = norm[c.toUpperCase().replace(/[\s_]/g, '')]
-      if (v != null && v !== '') return v
-    }
-    return undefined
-  }
-  const fecha = fechaDesdeYYYYMMDD(g('Columna1', 'FECHA', 'DIA', 'fecha'))
-  if (!fecha) return null
-  const operario = str(g('OPERARIO', 'CODUTI', 'operario'))
-  if (!operario) return null
-  const nro = (...c: string[]) => num(g(...c))
-  return {
-    fecha,
-    turno: (str(g('TURNO', 'turno')) ?? '').toUpperCase(),
-    operario,
-    nombre: str(g('NOMUTI', 'NOMBRE', 'nombre')),
-    sector: (str(g('SECTOR', 'CIRCUITO', 'sector', 'circuito')) ?? '').toUpperCase(),
-    tipo: (str(g('TIPO', 'tipo')) ?? '').toUpperCase(),
-    soportes: nro('SOPORTES'),
-    lineas: nro('LINEAS'),
-    bultos: nro('BULTOS'),
-    tiempoTotal: nro('TIEMPO TOTAL'),
-    tiempoMuerto: nro('TIEMPO MUERTO'),
-    tiempoNeto: nro('TIEMPO NETO'),
-    tiempoSuperNeto: nro('TIEMPO SUPER NETO'),
-    prodTotal: nro('PROD TOTAL'),
-    prodNeto: nro('PROD NETO'),
-    prodSuperNeto: nro('PROD SUPER NETO'),
-  }
-}
-
-async function ingestProdCirc(records: Iterable<Record<string, unknown>>) {
-  const rows: NonNullable<ReturnType<typeof mapProdCirc>>[] = []
-  let errores = 0
-  for (const r of records) {
-    const m = mapProdCirc(r)
-    if (!m) { errores++; continue }
-    rows.push(m)
-  }
-  if (!rows.length) return { insertados: 0, errores, rows }
-
-  // dedup: clave fecha+turno+operario+sector+tipo contra la base y dentro del archivo
-  // (Prisma 6 ya no soporta skipDuplicates en createMany)
-  let minT = Infinity, maxT = -Infinity
-  for (const r of rows) { const t = r.fecha.getTime(); if (t < minT) minT = t; if (t > maxT) maxT = t }
-  const clave = (f: string, t: string, o: string, s: string, ti: string) => `${f}|${t}|${o}|${s}|${ti}`
-  const existentes = await db.prodCircuito.findMany({
-    where: { fecha: { gte: new Date(minT), lte: new Date(maxT) } },
-    select: { fecha: true, turno: true, operario: true, sector: true, tipo: true },
-  })
-  const vistos = new Set(existentes.map((e) => clave(e.fecha.toISOString().slice(0, 10), e.turno, e.operario, e.sector, e.tipo)))
-  const nuevos: typeof rows = []
-  for (const r of rows) {
-    const k = clave(r.fecha.toISOString().slice(0, 10), r.turno, r.operario, r.sector, r.tipo)
-    if (vistos.has(k)) continue
-    vistos.add(k)
-    nuevos.push(r)
-  }
-  for (const c of chunk(nuevos, 400)) await db.prodCircuito.createMany({ data: c as never })
-  return { insertados: nuevos.length, errores, rows }
-}
-
+// Ingesta de PICKING (reporte E-8 / log WMS): fila por evento de levante.
 export async function ingestRows(
   tipo: TipoCarga,
   records: Iterable<Record<string, unknown>>,
@@ -521,7 +451,6 @@ export async function ingestRows(
   if (tipo === 'ola') res = await ingestOla(contando())
   else if (tipo === 'h61') res = await ingestH61(contando())
   else if (tipo === 'tm') res = await ingestTM(contando())
-  else if (tipo === 'prodcirc') res = await ingestProdCirc(contando())
   else res = await ingestPicking(contando(), opts.mapping ?? null, opts.batchId)
 
   const fechas = (res.rows as { fecha: Date }[]).map((r) => r.fecha.getTime())
@@ -530,7 +459,7 @@ export async function ingestRows(
   const desde = fechas.length ? new Date(minT).toISOString().slice(0, 10) : undefined
   const hasta = fechas.length ? new Date(maxT).toISOString().slice(0, 10) : undefined
 
-  // upsert: las cargas incrementales (picking/prodcirc) reutilizan el mismo batchId por lote
+  // upsert: las cargas incrementales (picking) reutilizan el mismo batchId por lote
   await db.uploadBatch.upsert({
     where: { id: opts.batchId },
     create: {

@@ -14,7 +14,7 @@ export const maxDuration = 300
 //     Cada parte se guarda en UploadChunk (base64) y cuando están todas se
 //     arma el buffer y se procesa igual que el modo 1.
 // El script Python (python/subir_archivo.py) sigue disponible via /api/batch.
-const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking', 'prodcirc']
+const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking']
 const LIMITE_B64 = 8 * 1024 * 1024      // tope de base64 por parte (cliente usa ~2,7 MB)
 const LIMITE_ARCHIVO = 300 * 1024 * 1024 // tope de seguridad del archivo armado
 const TTL_CHUNKS_MS = 6 * 60 * 60 * 1000 // limpieza de partes huérfanas (>6 h)
