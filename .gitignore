@@ -63,4 +63,4 @@ server.log
 /z-codespace-config.json
 .zscripts/
 mini-services/*/node_modules
-examples/
+examples/tool-results/

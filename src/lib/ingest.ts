@@ -427,15 +427,20 @@ function mapMaq(r: Record<string, unknown>) {
   const sumaHoras = horasRow.reduce((a, b) => a + Math.max(0, b), 0)
   if (total === 0 && sumaHoras > 0) total = sumaHoras
   const bultos = Math.round(num(r.TOT_BULTOS ?? r.bultos) ?? 0)
+  // TAREAS: aprontamiento (TOT_APROS + TOT_APROS_PARCIAL; TOT_APROS_TOTAL del
+  // reporte a veces viene en 0 con componentes > 0) y homogeneización
+  // (TOT_HOMOGENEOS = STD + REALMAC_XD + REALMAC_STD, verificado 1 a 1)
+  const apros = Math.max(0, Math.round(num(r.TOT_APROS) ?? 0)) + Math.max(0, Math.round(num(r.TOT_APROS_PARCIAL) ?? 0))
+  const homogeneos = Math.max(0, Math.round(num(r.TOT_HOMOGENEOS) ?? 0))
   const horasIdx: number[] = []
   horasRow.forEach((v, i) => { if (v !== 0) horasIdx.push(i) })
-  return { fecha, turno, operario, nombre, actividad, nave, total, bultos, horasIdx }
+  return { fecha, turno, operario, nombre, actividad, nave, total, bultos, apros, homogeneos, horasIdx }
 }
 
 async function ingestMaq(records: Iterable<Record<string, unknown>>) {
   // clave = fecha|turno|operario|actividad|nave: el archivo puede traer varias filas
   // para la misma combinacion (distintos aperos/bloques) — se suman y las horas se deduplican
-  const opNave = new Map<string, { fecha: Date; turno: string; operario: string; nombre: string | null; actividad: string; nave: string; total: number; bultos: number; horasSet: Set<number> }>()
+  const opNave = new Map<string, { fecha: Date; turno: string; operario: string; nombre: string | null; actividad: string; nave: string; total: number; bultos: number; apros: number; homogeneos: number; horasSet: Set<number> }>()
   // pre-agregados por fecha x actividad y fecha x nave: horas unicas por operario
   const act = new Map<string, { fecha: Date; actividad: string; bultos: number; ops: Set<string>; horasPorOp: Map<string, Set<number>> }>()
   const nav = new Map<string, { fecha: Date; nave: string; bultos: number; ops: Set<string>; horasPorOp: Map<string, Set<number>> }>()
@@ -449,12 +454,14 @@ async function ingestMaq(records: Iterable<Record<string, unknown>>) {
     const k = `${fISO}|${m.turno}|${m.operario}|${m.actividad}|${m.nave}`
     let o = opNave.get(k)
     if (!o) {
-      o = { fecha: m.fecha, turno: m.turno, operario: m.operario, nombre: m.nombre, actividad: m.actividad, nave: m.nave, total: 0, bultos: 0, horasSet: new Set() }
+      o = { fecha: m.fecha, turno: m.turno, operario: m.operario, nombre: m.nombre, actividad: m.actividad, nave: m.nave, total: 0, bultos: 0, apros: 0, homogeneos: 0, horasSet: new Set() }
       opNave.set(k, o)
     }
     if (!o.nombre && m.nombre) o.nombre = m.nombre
     o.total += m.total
     o.bultos += m.bultos
+    o.apros += m.apros
+    o.homogeneos += m.homogeneos
     for (const h of m.horasIdx) o.horasSet.add(h)
 
     const ka = `${fISO}|${m.actividad}`
@@ -476,7 +483,7 @@ async function ingestMaq(records: Iterable<Record<string, unknown>>) {
     for (const h of m.horasIdx) hn.add(h)
   }
 
-  const opRows = [...opNave.values()].map((o) => ({ fecha: o.fecha, turno: o.turno, operario: o.operario, nombre: o.nombre, actividad: o.actividad, nave: o.nave, total: o.total, bultos: o.bultos, horas: o.horasSet.size }))
+  const opRows = [...opNave.values()].map((o) => ({ fecha: o.fecha, turno: o.turno, operario: o.operario, nombre: o.nombre, actividad: o.actividad, nave: o.nave, total: o.total, bultos: o.bultos, apros: o.apros, homogeneos: o.homogeneos, horas: o.horasSet.size }))
   const actRows = [...act.values()].map((a) => ({ fecha: a.fecha, actividad: a.actividad, bultos: a.bultos, operarios: a.ops.size, horas: [...a.horasPorOp.values()].reduce((acc, s) => acc + s.size, 0) }))
   const navRows = [...nav.values()].map((v) => ({ fecha: v.fecha, nave: v.nave, bultos: v.bultos, operarios: v.ops.size, horas: [...v.horasPorOp.values()].reduce((acc, s) => acc + s.size, 0) }))
 

@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useToast } from '@/hooks/use-toast'
-import { FileSpreadsheet, HardDriveDownload, Trash2, Terminal, CheckCircle2, Loader2 } from 'lucide-react'
+import { FileSpreadsheet, HardDriveDownload, Trash2, Terminal, CheckCircle2, Loader2, Wrench } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -111,10 +111,36 @@ export function CargaDatosTab() {
   const [subiendo, setSubiendo] = useState<string | null>(null)
   const [res, setRes] = useState<Record<string, string>>({})
   const inputFile = useRef<Record<string, HTMLInputElement | null>>({})
+  const [manteniendo, setManteniendo] = useState(false)
+  const [mantInfo, setMantInfo] = useState<{ texto: string; ok: boolean } | null>(null)
   const qc = useQueryClient()
   const { toast } = useToast()
 
   const { data: status } = useQueryStatus()
+
+  // Mantenimiento de la base: Neon tiene un tope de 512 MB; si una subida
+  // falla con "could not extend file / 53100" hay que liberar el staging.
+  async function liberarEspacio() {
+    if (!confirm('¿Liberar espacio? Borra SOLO partes y tandas temporales de subidas (los datos cargados no se tocan).')) return
+    setManteniendo(true)
+    setMantInfo(null)
+    try {
+      const r = await fetch('/api/mantenimiento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const j = (await r.json().catch(() => ({}))) as { mensaje?: string; baseMB?: number | null; error?: string }
+      if (!r.ok || j.error) throw new Error(j.error ?? `Error HTTP ${r.status}`)
+      setMantInfo({
+        texto: `${j.mensaje ?? 'Listo.'}${j.baseMB != null ? ` Uso actual de la base: ${j.baseMB} MB de 512 MB.` : ''}`,
+        ok: true,
+      })
+      toast({ title: 'Mantenimiento terminado', description: j.mensaje })
+      qc.invalidateQueries()
+    } catch (e) {
+      setMantInfo({ texto: `Error: ${(e as Error).message}`, ok: false })
+      toast({ title: 'No se pudo completar el mantenimiento', description: (e as Error).message, variant: 'destructive' })
+    } finally {
+      setManteniendo(false)
+    }
+  }
 
   async function subir(tipo: string) {
     const input = inputFile.current[tipo]
@@ -245,6 +271,28 @@ export function CargaDatosTab() {
             El script auto-detecta columnas (fecha, operario, hora, bultos, soporte, circuito) y muestra el mapeo elegido antes de enviar.
             Si tu archivo usa otros nombres, ajustá el diccionario <code className="rounded bg-muted px-1">MAPEO_PICKING</code> al inicio del script.
           </p>
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2"><Wrench className="h-4 w-4" /> Mantenimiento de la base</CardTitle>
+          <CardDescription>
+            Si una carga falla con “la base de datos alcanzó su límite de espacio (512 MB)”, liberá las partes temporales
+            que quedaron de subidas anteriores. <b>No borra datos cargados</b> (ola, H61, maquinistas, tiempos muertos ni picking).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Button size="sm" variant="outline" onClick={liberarEspacio} disabled={manteniendo} className="min-w-44">
+            {manteniendo ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Liberando…</> : <><Wrench className="h-4 w-4 mr-1" /> Liberar espacio</>}
+          </Button>
+          {mantInfo && (
+            <p className={`text-xs flex items-start gap-1 ${mantInfo.ok ? 'text-emerald-700' : 'text-red-600'}`}>
+              {mantInfo.ok && <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0" />} {mantInfo.texto}
+            </p>
+          )}
         </CardContent>
       </Card>
 

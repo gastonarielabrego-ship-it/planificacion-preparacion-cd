@@ -6,6 +6,7 @@
 //   3) cerrar:  cierra el batch (UploadBatch)
 // Cada paso es idempotente/reanudable: el cliente los invoca en bucle.
 
+import { gzipSync, gunzipSync } from 'zlib'
 import { db } from '@/lib/db'
 
 const TAM_TANDA_FILAS = 2000 // filas por registro UploadStage
@@ -66,12 +67,25 @@ export function arrayAFila(a: unknown[], batch: string): Record<string, unknown>
   }
 }
 
-// Guarda una tanda de filas mapeadas en UploadStage como un único JSON
+// Guarda una tanda de filas mapeadas en UploadStage como un único registro.
+// El JSON se comprime con gzip (y se guarda en base64): las filas de eventos
+// son muy repetitivas y así el stage ocupa ~8 veces menos — clave para no
+// llenar la base Neon de 512 MB con archivos de cientos de miles de filas.
+// gunzipAceptarTanda lee también JSON plano de tandas guardadas antes de este cambio.
 export async function guardarTanda(fileId: string, tanda: PickingMapeada[]) {
   if (!tanda.length) return
-  await db.uploadStage.create({
-    data: { fileId, data: JSON.stringify(tanda.map(filaAArray)) },
-  })
+  const json = JSON.stringify(tanda.map(filaAArray))
+  const data = gzipSync(Buffer.from(json, 'utf8')).toString('base64')
+  await db.uploadStage.create({ data: { fileId, data } })
+}
+
+function parsearTanda(data: string): unknown {
+  // formato nuevo: base64(gzip(json)) — el magic 1f 8b del gzip no puede
+  // aparecer al inicio de un JSON, así que la distinción no es ambigua
+  if (data.startsWith('H4sI')) {
+    return JSON.parse(gunzipSync(Buffer.from(data, 'base64')).toString('utf8'))
+  }
+  return JSON.parse(data)
 }
 
 const TAM_TANDA_INSERT = 25 // registros UploadStage por llamada (25 × 2000 = 50k filas máx)
@@ -92,7 +106,7 @@ export async function insertarTandaPicking(fileId: string): Promise<{ insertados
   for (const l of lotes) {
     let arr: unknown
     try {
-      arr = JSON.parse(l.data)
+      arr = parsearTanda(l.data)
     } catch {
       continue // tanda corrupta: se descarta (se borra igual abajo)
     }

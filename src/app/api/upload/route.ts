@@ -20,8 +20,21 @@ export const maxDuration = 300
 // El script Python (python/subir_archivo.py) sigue disponible via /api/batch.
 const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking', 'maq']
 const LIMITE_B64 = 8 * 1024 * 1024      // tope de base64 por parte (cliente usa ~2,7 MB)
-const LIMITE_ARCHIVO = 300 * 1024 * 1024 // tope de seguridad del archivo armado
-const TTL_CHUNKS_MS = 6 * 60 * 60 * 1000 // limpieza de partes huérfanas (>6 h)
+const LIMITE_ARCHIVO = 200 * 1024 * 1024 // tope de seguridad del archivo armado (la base Neon tiene tope 512 MB)
+const TTL_STAGE_MS = 2 * 60 * 60 * 1000  // tandas de stage huérfanas (>2 h)
+
+// La base Neon tiene un tope duro de proyecto (512 MB). Si se supera, Postgres
+// rechaza cualquier INSERT/UPDATE con el código 53100. Traducimos eso a un
+// mensaje claro (HTTP 507) en lugar del error críptico de Prisma.
+function esBaseLlena(e: unknown): boolean {
+  const msg = e instanceof Error ? `${e.message} ${String((e as { meta?: unknown }).meta ?? '')}` : String(e)
+  return msg.includes('53100') || msg.includes('size limit') || msg.includes('512 MB')
+}
+function respuestaBaseLlena() {
+  return NextResponse.json({
+    error: 'La base de datos alcanzó su límite de espacio (512 MB). Entra a Carga de Datos y usá el botón "Liberar espacio" (mantenimiento); después reintentá la subida.',
+  }, { status: 507 })
+}
 
 interface ChunkBody {
   modo?: string
@@ -92,16 +105,31 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `parte fuera de rango (tamaño ${data.length})` }, { status: 400 })
       }
 
-      // al iniciar una subida nueva (parte 0) limpiamos partes huérfanas de otros intentos
+      // al iniciar una subida nueva (parte 0) limpiamos TODO lo que quedó de
+      // intentos anteriores: cada reintento re-suben todas las partes desde
+      // cero, así que ninguna parte vieja sirve. Con el TTL de 6 h viejo, dos
+      // o tres reintentos del mismo archivo llenaban la base (512 MB, error
+      // 53100). También tandas de stage huérfanas de parseos abandonados.
       if (i === 0) {
-        await db.uploadChunk.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - TTL_CHUNKS_MS) } } })
+        try {
+          await db.uploadChunk.deleteMany({})
+          await db.uploadStage.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - TTL_STAGE_MS) } } })
+        } catch (e) {
+          if (esBaseLlena(e)) return respuestaBaseLlena()
+          throw e
+        }
       }
 
-      await db.uploadChunk.upsert({
-        where: { fileId_idx: { fileId, idx: i } },
-        create: { fileId, idx: i, data },
-        update: { data },
-      })
+      try {
+        await db.uploadChunk.upsert({
+          where: { fileId_idx: { fileId, idx: i } },
+          create: { fileId, idx: i, data: Buffer.from(data, 'base64') },
+          update: { data: Buffer.from(data, 'base64') },
+        })
+      } catch (e) {
+        if (esBaseLlena(e)) return respuestaBaseLlena()
+        throw e
+      }
 
       const recibidos = await db.uploadChunk.count({ where: { fileId } })
       if (recibidos < total) {
@@ -126,13 +154,14 @@ export async function POST(req: NextRequest) {
       if (partes.length !== total || partes.some((p, k) => p.idx !== k)) {
         return NextResponse.json({ error: `faltan partes del archivo (${partes.length}/${total})` }, { status: 409 })
       }
-      const totalB64 = partes.reduce((a, p) => a + p.data.length, 0)
-      if (totalB64 > LIMITE_B64 * total + 1024) {
+      const totalBytes = partes.reduce((a, p) => a + p.data.length, 0)
+      if (totalBytes > LIMITE_B64 * total + 1024) {
         return NextResponse.json({ error: 'tamaño total de partes fuera de rango' }, { status: 400 })
       }
       let buf: Buffer
       try {
-        buf = Buffer.concat(partes.map((p) => Buffer.from(p.data, 'base64')))
+        // data ahora es Bytes (bytea/blob): Prisma lo devuelve como Uint8Array/Buffer
+        buf = Buffer.concat(partes.map((p) => Buffer.from(p.data as unknown as Uint8Array)))
       } catch {
         return NextResponse.json({ error: 'no se pudo decodificar el archivo' }, { status: 400 })
       }

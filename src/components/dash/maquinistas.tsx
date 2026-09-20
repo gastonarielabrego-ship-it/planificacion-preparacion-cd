@@ -3,10 +3,10 @@
 // Módulo Maquinistas (H61 de clarkistas): foco en CUÁNTAS personas realizan cada
 // actividad y a QUÉ NAVES (circuito) están asignadas. Fuente: archivo "h61 maquinista.xlsx".
 import { useQuery } from '@tanstack/react-query'
-import { Forklift, Users, Clock3, Boxes, ArrowRightLeft, Warehouse, MapPin, UploadCloud, Info } from 'lucide-react'
+import { Forklift, Users, Clock3, Boxes, ArrowRightLeft, Warehouse, MapPin, UploadCloud, Info, Scissors, Layers } from 'lucide-react'
 import { Kpi, SinDatos } from './kpi'
 import { fetchDatos, n, n1, fechaCorta, COLORES } from '@/lib/client'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, Cell, LineChart, Line } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -52,6 +52,17 @@ interface MaqData {
   porTurno?: { turno: string; personasPromDia: number | null; operarios: number; movimientos: number; bultos: number; porActividad: { actividad: string; personasProm: number | null; operarios: number }[] }[]
   porMesActividad?: { mes: string; actividad: string; personasProm: number }[]
   porMesNave?: { mes: string; nave: string; personasProm: number }[]
+  tareas?: {
+    conDatos: boolean
+    movApros: number
+    movHom: number
+    operariosApros: number
+    operariosHom: number
+    personasPromApros: number | null
+    personasPromHom: number | null
+    porDia: { fecha: string; apros: number; homogeneos: number; ambas: number }[]
+    porActividad: { tarea: string; actividad: string; codigo: string; personasPromDia: number | null; operarios: number; dias: number; movimientos: number }[]
+  }
   fuentes?: { filename: string | null; rows: number; fecha: string }[]
 }
 
@@ -77,6 +88,8 @@ export function MaquinistasTab() {
             <br />
             Se reconoce automáticamente por el nombre (que incluya “maquinista” o “clarkista”). Podés subirlo
             directo acá (por partes, sin límite de tamaño) o con el script <code className="rounded bg-muted px-1">subir_archivo.py</code>.
+            El módulo también distingue las tareas de <b>apros</b> (aprontamiento) y <b>homogéneos</b> (homogeneización):
+            cuántas personas hacen cada tarea por día y en qué actividades están.
           </AlertDescription>
         </Alert>
         <SinDatos mensaje="No hay filas de maquinistas cargadas todavía." />
@@ -253,6 +266,82 @@ export function MaquinistasTab() {
         </CardContent>
       </Card>
 
+      {(data.tareas?.conDatos) && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Scissors className="h-4 w-4" /> Apros vs Homogéneos — personas por día</CardTitle>
+              <CardDescription>
+                Cuántas personas hacen cada tarea cada día. Promedio: <b>{n1(data.tareas.personasPromApros)}</b> personas/día en apros ·
+                <b>{n1(data.tareas.personasPromHom)}</b> en homogéneos
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data.tareas.porDia} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="fecha" tick={{ fontSize: 10 }} tickFormatter={(v: string) => (v ?? '').slice(5)} minTickGap={32} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip labelFormatter={(v) => fechaCorta(String(v))} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line type="monotone" dataKey="apros" name="Apros" stroke="#2563eb" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="homogeneos" name="Homogéneos" stroke="#d97706" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="ambas" name="Ambas tareas" stroke="#059669" strokeWidth={1.5} strokeDasharray="5 3" dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {n(data.tareas.operariosApros)} personas hicieron apros y {n(data.tareas.operariosHom)} homogéneos en el período;
+                la línea verde marca las que el mismo día hacen ambas ({n1(data.tareas.porDia.reduce((a, d) => Math.max(a, d.ambas), 0))} máx. en un día).
+                Movimientos: {n(data.tareas.movApros)} apros · {n(data.tareas.movHom)} homogéneos.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Layers className="h-4 w-4" /> Personas por tarea y actividad</CardTitle>
+              <CardDescription>En qué actividades está la gente que hace cada tarea (promedio de personas por día)</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tarea</TableHead>
+                    <TableHead>Actividad</TableHead>
+                    <TableHead className="text-right">Personas/día</TableHead>
+                    <TableHead className="text-right">Personas período</TableHead>
+                    <TableHead className="text-right">Días</TableHead>
+                    <TableHead className="text-right">Movimientos</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(data.tareas.porActividad ?? []).map((t) => (
+                    <TableRow key={`${t.tarea}-${t.codigo}`}>
+                      <TableCell className="font-medium">
+                        <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold text-white ${t.tarea === 'apros' ? 'bg-blue-600' : 'bg-amber-600'}`}>
+                          {t.tarea === 'apros' ? 'Apros' : 'Homogéneos'}
+                        </span>
+                      </TableCell>
+                      <TableCell>{t.actividad}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n1(t.personasPromDia)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(t.operarios)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(t.dias)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n(t.movimientos)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <p className="text-xs text-muted-foreground">
+                Una misma persona puede hacer ambas tareas el mismo día (incluso en la misma actividad), por eso las filas no suman
+                la dotación total. “Personas/día” promedia sobre los días en que esa tarea se realizó.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="pb-2">
@@ -341,12 +430,17 @@ export function MaquinistasTab() {
 
       <Alert>
         <Info className="h-4 w-4" />
-        <AlertTitle className="text-sm">Cómo leer las naves del reporte</AlertTitle>
+        <AlertTitle className="text-sm">Cómo leer las naves y las tareas del reporte</AlertTitle>
         <AlertDescription className="text-xs leading-relaxed">
           La nave sale de la columna <b>CIRCUITO</b> del H61 de maquinistas. “Varias (XXX)” agrupa las filas donde el clark
           trabajó sobre más de una nave sin código específico; los códigos numéricos (100, 200, 998, 999) son zonas internas
           del reporte; “Sin nave” son filas sin dato. Las horas-hombre cuentan cada hora una sola vez por persona, día y
           actividad (aunque haya trabajado en varias naves en esa hora).
+          <br />
+          Las tareas salen de las columnas TOT_* del reporte: <b>apros</b> = TOT_APROS + TOT_APROS_PARCIAL (aprontamiento)
+          y <b>homogéneos</b> = TOT_HOMOGENEOS (STD + REALMAC_XD + REALMAC_STD), contados en movimientos. Apros y homogéneos
+          no dependen de la actividad: la actividad 2 y la 4 hacen ambas tareas (verificado en el archivo), por eso se
+          clasifica a las personas por los movimientos registrados y no por la actividad.
         </AlertDescription>
       </Alert>
     </div>

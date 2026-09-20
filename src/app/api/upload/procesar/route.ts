@@ -8,6 +8,17 @@ import { guardarTanda, insertarTandaPicking, PickingMapeada, tamTandaFilas } fro
 export const runtime = 'nodejs'
 export const maxDuration = 300
 
+// La base Neon tiene tope 512 MB; si un INSERT lo supera Postgres responde 53100.
+function esBaseLlena(e: unknown): boolean {
+  const msg = e instanceof Error ? `${e.message} ${String((e as { meta?: unknown }).meta ?? '')}` : String(e)
+  return msg.includes('53100') || msg.includes('size limit') || msg.includes('512 MB')
+}
+function respuestaBaseLlena() {
+  return NextResponse.json({
+    error: 'La base de datos alcanzó su límite de espacio (512 MB). Entra a Carga de Datos y usá el botón "Liberar espacio" (mantenimiento).',
+  }, { status: 507 })
+}
+
 // Procesamiento POR PASOS de un picking subido por partes (ver /api/upload):
 // el archivo de eventos E-8 puede tener cientos de miles de filas y procesarlo
 // entero en la llamada que sube la última parte supera el timeout de la
@@ -20,8 +31,8 @@ export const maxDuration = 300
 //   paso=cerrar   -> marca el batch como cerrado cuando no queda nada en stage.
 // Cada paso es reanudable: si una llamada falla o se pierde la respuesta, se
 // puede repetir sin duplicar ni perder filas.
-const LIMITE_ARCHIVO = 300 * 1024 * 1024
-const TTL_STAGE_MS = 6 * 60 * 60 * 1000
+const LIMITE_ARCHIVO = 200 * 1024 * 1024
+const TTL_STAGE_MS = 2 * 60 * 60 * 1000
 
 interface PasoBody {
   paso?: string
@@ -48,10 +59,18 @@ export async function POST(req: NextRequest) {
 }
 
 async function pasoParseo(fileId: string, nombre: string) {
-  // reintentos y restos de intentos anteriores de este mismo fileId: empezar limpio
-  await db.uploadStage.deleteMany({ where: { fileId } })
-  // tandas huérfanas de otros intentos (>6 h)
-  await db.uploadStage.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - TTL_STAGE_MS) } } })
+  try {
+    // reintentos y restos de intentos anteriores: empezar limpio. Se borra el
+    // stage de ESTE fileId y también el de otros intentos abandonados (más viejos
+    // que el TTL) y partes de chunks de otros fileIds: con archivos grandes el
+    // peak de espacio de la base es la diferencia entre caber o no.
+    await db.uploadStage.deleteMany({ where: { fileId } })
+    await db.uploadStage.deleteMany({ where: { AND: [{ fileId: { not: fileId } }, { createdAt: { lt: new Date(Date.now() - TTL_STAGE_MS) } }] } })
+    await db.uploadChunk.deleteMany({ where: { fileId: { not: fileId } } })
+  } catch (e) {
+    if (esBaseLlena(e)) return respuestaBaseLlena()
+    throw e
+  }
 
   // Armar el buffer PAGINANDO las partes (6 por vez): cargarlas todas juntas
   // duplicaba la memoria (strings base64 + buffers decodificados) y con
@@ -70,7 +89,8 @@ async function pasoParseo(fileId: string, nombre: string) {
       if (p.idx !== esperado) {
         return NextResponse.json({ error: `faltan partes del archivo (desde la ${esperado})` }, { status: 409 })
       }
-      bufParts.push(Buffer.from(p.data, 'base64'))
+      // data es Bytes (bytea/blob): Prisma lo entrega como Uint8Array/Buffer
+      bufParts.push(Buffer.from(p.data as unknown as Uint8Array))
       esperado++
     }
     desdeIdx = page[page.length - 1].idx + 1
@@ -132,9 +152,21 @@ async function pasoParseo(fileId: string, nombre: string) {
   procesar(mapPicking(primera.value, mapping))
   for (const r of it) {
     const espera = procesar(mapPicking(r, mapping))
-    if (espera) await espera // guardar la tanda mientras el generador sigue avanzando
+    if (espera) {
+      try {
+        await espera // guardar la tanda mientras el generador sigue avanzando
+      } catch (e) {
+        if (esBaseLlena(e)) return respuestaBaseLlena()
+        throw e
+      }
+    }
   }
-  if (tanda.length) await guardarTanda(fileId, tanda)
+  try {
+    if (tanda.length) await guardarTanda(fileId, tanda)
+  } catch (e) {
+    if (esBaseLlena(e)) return respuestaBaseLlena()
+    throw e
+  }
 
   await db.uploadChunk.deleteMany({ where: { fileId } })
 

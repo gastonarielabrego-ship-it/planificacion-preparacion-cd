@@ -1231,12 +1231,24 @@ export async function getMaquinistas(f: Filtros) {
   const porTurno = new Map<string, Agr>()
   const turnoAct = new Map<string, Agr>() // turno|actividad
 
+  // ---- TAREAS: APROS vs HOMOGENEOS ----
+  // El archivo trae por fila los movimientos de aprontamiento (apros) y de
+  // homogeneización (homogeneos). NO equivalen a la actividad (2 y 4 hacen
+  // ambas tareas): hay que clasificar persona-día por suma de sus filas.
+  let movApros = 0
+  let movHom = 0
+  // suma de movimientos por tarea para persona-día (fecha|operario) y persona-día-actividad
+  const opDiaTarea = new Map<string, { ap: number; ho: number }>()
+  const opDiaActTarea = new Map<string, { ap: number; ho: number }>()
+
   for (const rw of rows) {
     const fISO = dia(rw.fecha)
     diasSet.add(fISO)
     opsAll.add(rw.operario)
     movimientos += rw.total
     bultos += rw.bultos
+    movApros += (rw as { apros?: number }).apros ?? 0
+    movHom += (rw as { homogeneos?: number }).homogeneos ?? 0
     let g = opsDia.get(fISO)
     if (!g) { g = new Set(); opsDia.set(fISO, g) }
     g.add(rw.operario)
@@ -1245,6 +1257,17 @@ export async function getMaquinistas(f: Filtros) {
     push(agrDe(matriz, `${rw.actividad}|${rw.nave}`), rw.operario, fISO, rw.total, rw.bultos)
     push(agrDe(porTurno, rw.turno), rw.operario, fISO, rw.total, rw.bultos)
     push(agrDe(turnoAct, `${rw.turno}|${rw.actividad}`), rw.operario, fISO, rw.total, rw.bultos)
+
+    const kd = `${fISO}|${rw.operario}`
+    const dAcc = opDiaTarea.get(kd) ?? { ap: 0, ho: 0 }
+    dAcc.ap += (rw as { apros?: number }).apros ?? 0
+    dAcc.ho += (rw as { homogeneos?: number }).homogeneos ?? 0
+    opDiaTarea.set(kd, dAcc)
+    const ka2 = `${kd}|${rw.actividad}`
+    const aAcc = opDiaActTarea.get(ka2) ?? { ap: 0, ho: 0 }
+    aAcc.ap += (rw as { apros?: number }).apros ?? 0
+    aAcc.ho += (rw as { homogeneos?: number }).homogeneos ?? 0
+    opDiaActTarea.set(ka2, aAcc)
   }
 
   // personas promedio por dia del corte = suma de personas de cada dia / dias con datos
@@ -1322,6 +1345,81 @@ export async function getMaquinistas(f: Filtros) {
     for (const s of porOp.values()) { sumaNavesPorOp += s.size; nOpsNaves++ }
   }
 
+  // ---- clasificación persona-día por tarea (apros / homogéneos / ambas) ----
+  const opsAprosDia = new Map<string, Set<string>>()
+  const opsHomDia = new Map<string, Set<string>>()
+  const opsAmbasDia = new Map<string, Set<string>>()
+  const opsAprosAll = new Set<string>()
+  const opsHomAll = new Set<string>()
+  for (const [kd, acc] of opDiaTarea) {
+    const [fISO, op] = kd.split('|')
+    const haceApros = acc.ap > 0
+    const haceHom = acc.ho > 0
+    if (haceApros) {
+      let s = opsAprosDia.get(fISO); if (!s) { s = new Set(); opsAprosDia.set(fISO, s) }
+      s.add(op); opsAprosAll.add(op)
+    }
+    if (haceHom) {
+      let s = opsHomDia.get(fISO); if (!s) { s = new Set(); opsHomDia.set(fISO, s) }
+      s.add(op); opsHomAll.add(op)
+    }
+    if (haceApros && haceHom) {
+      let s = opsAmbasDia.get(fISO); if (!s) { s = new Set(); opsAmbasDia.set(fISO, s) }
+      s.add(op)
+    }
+  }
+  const personasPromDeMapa = (m: Map<string, Set<string>>): number | null => {
+    if (!m.size) return null
+    let sum = 0
+    for (const s of m.values()) sum += s.size
+    return r1(sum / m.size) // promedio sobre los días en que la tarea se realizó
+  }
+  const porDiaTareas = [...diasSet].sort().map((fISO) => ({
+    fecha: fISO,
+    apros: opsAprosDia.get(fISO)?.size ?? 0,
+    homogeneos: opsHomDia.get(fISO)?.size ?? 0,
+    ambas: opsAmbasDia.get(fISO)?.size ?? 0,
+  }))
+
+  // tarea x actividad: personas promedio por día haciendo ESA tarea en ESA actividad
+  const tareaActAcc = new Map<string, { porDia: Map<string, Set<string>>; mov: number; ops: Set<string> }>()
+  for (const [k, acc] of opDiaActTarea) {
+    const partes = k.split('|') // fecha|operario|actividad
+    const fISO = partes[0]
+    const op = partes[1]
+    const act = partes[2]
+    for (const [tarea, mov] of [['apros', acc.ap], ['homogeneos', acc.ho]] as const) {
+      if (mov <= 0) continue
+      const kk = `${tarea}|${act}`
+      let t = tareaActAcc.get(kk)
+      if (!t) { t = { porDia: new Map(), mov: 0, ops: new Set() }; tareaActAcc.set(kk, t) }
+      t.mov += mov
+      t.ops.add(op)
+      let s = t.porDia.get(fISO); if (!s) { s = new Set(); t.porDia.set(fISO, s) }
+      s.add(op)
+    }
+  }
+  const porDiaProm = (t: { porDia: Map<string, Set<string>> }): number | null => {
+    if (!t.porDia.size) return null
+    let sum = 0
+    for (const s of t.porDia.values()) sum += s.size
+    return r1(sum / t.porDia.size)
+  }
+  const tareasPorActividad = [...tareaActAcc.entries()]
+    .map(([k, t]) => {
+      const [tarea, actividad] = k.split('|')
+      return {
+        tarea,
+        actividad: etiquetaAct(actividad),
+        codigo: actividad,
+        personasPromDia: porDiaProm(t),
+        operarios: t.ops.size,
+        dias: t.porDia.size,
+        movimientos: t.mov,
+      }
+    })
+    .sort((a, b) => a.tarea.localeCompare(b.tarea) || (b.personasPromDia ?? 0) - (a.personasPromDia ?? 0))
+
   return {
     registros: rows.length,
     vacio: false as const,
@@ -1376,6 +1474,17 @@ export async function getMaquinistas(f: Filtros) {
     porTurno: porTurnoOut,
     porMesActividad,
     porMesNave: porMesNaveFiltrado(mesNav, topNaves),
+    tareas: {
+      movApros,
+      movHom,
+      conDatos: movApros + movHom > 0,
+      operariosApros: opsAprosAll.size,
+      operariosHom: opsHomAll.size,
+      personasPromApros: movApros > 0 ? personasPromDeMapa(opsAprosDia) : null,
+      personasPromHom: movHom > 0 ? personasPromDeMapa(opsHomDia) : null,
+      porDia: porDiaTareas,
+      porActividad: tareasPorActividad,
+    },
     fuentes: fuentesOut,
   }
 }

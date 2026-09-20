@@ -98,6 +98,10 @@ model MaqOpNave {
   total     Int
   bultos    Int
   horas     Int
+  // apros = TOT_APROS + TOT_APROS_PARCIAL (movimientos de aprontamiento)
+  // homogeneos = TOT_HOMOGENEOS (STD + REALMAC_XD + REALMAC_STD)
+  apros      Int @default(0)
+  homogeneos Int @default(0)
   @@unique([fecha, turno, operario, actividad, nave])
   @@index([fecha])
 }
@@ -195,7 +199,7 @@ model UploadChunk {
   id        String   @id @default(cuid())
   fileId    String
   idx       Int
-  data      String
+  data      Bytes // binario puro: base64 en texto ocupaba ~33% mas y llenaba la base de 512 MB
   createdAt DateTime @default(now())
   @@unique([fileId, idx])
 }

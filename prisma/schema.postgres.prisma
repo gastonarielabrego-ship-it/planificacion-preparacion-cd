@@ -100,6 +100,10 @@ model MaqOpNave {
   total     Int
   bultos    Int
   horas     Int
+  // apros = TOT_APROS + TOT_APROS_PARCIAL (movimientos de aprontamiento)
+  // homogeneos = TOT_HOMOGENEOS (STD + REALMAC_XD + REALMAC_STD)
+  apros      Int @default(0)
+  homogeneos Int @default(0)
   @@unique([fecha, turno, operario, actividad, nave])
   @@index([fecha])
 }
@@ -192,12 +196,14 @@ model UploadBatch {
   createdAt DateTime @default(now())
 }
 
-// Partes de una subida por chunks (archivos grandes desde la web; Vercel limita cada request a ~4,5 MB)
+// Partes de una subida por chunks (archivos grandes desde la web; Vercel limita cada request a ~4,5 MB).
+// data va en BYTES (bytea): guardar base64 en texto ocupaba ~33% mas y una base
+// Neon de 512 MB se llenaba con 2-3 intentos de archivos grandes.
 model UploadChunk {
   id        String   @id @default(cuid())
   fileId    String
   idx       Int
-  data      String
+  data      Bytes
   createdAt DateTime @default(now())
   @@unique([fileId, idx])
 }
