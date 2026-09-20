@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Forklift, Users, Clock3, Boxes, ArrowRightLeft, Warehouse, MapPin, UploadCloud, Info, Scissors, Layers } from 'lucide-react'
 import { Kpi, SinDatos } from './kpi'
 import { fetchDatos, n, n1, fechaCorta, COLORES } from '@/lib/client'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, Cell, LineChart, Line } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, Cell, LineChart, Line, ComposedChart } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -49,7 +49,20 @@ interface MaqData {
   porActividad?: FilaAct[]
   porNave?: FilaNave[]
   matriz?: { actividad: string; nave: string; personasPromDia: number | null; operarios: number; dias: number; movimientos: number }[]
-  porTurno?: { turno: string; personasPromDia: number | null; operarios: number; movimientos: number; bultos: number; porActividad: { actividad: string; personasProm: number | null; operarios: number }[] }[]
+  porTurno?: {
+    turno: string
+    personasPromDia: number | null
+    operarios: number
+    movimientos: number
+    bultos: number
+    porActividad: { actividad: string; personasProm: number | null; operarios: number }[]
+    personasPromApros?: number | null
+    personasPromHom?: number | null
+    porTareaActividad?: { tarea: string; actividad: string; codigo: string; personasPromDia: number | null; operarios: number; movimientos: number }[]
+  }[]
+  porHora?: { hora: number; etiqueta: string; total: number; M: number; T: number; N: number }[]
+  horaPico?: { hora: number; movimientos: number; promDia: number } | null
+  tieneHorario?: boolean
   porMesActividad?: { mes: string; actividad: string; personasProm: number }[]
   porMesNave?: { mes: string; nave: string; personasProm: number }[]
   tareas?: {
@@ -69,6 +82,7 @@ interface MaqData {
 const TURNO_LABEL: Record<string, string> = { M: 'Mañana (6-14)', T: 'Tarde (14-22)', N: 'Noche (23-6)', '?': 'Sin turno' }
 const COLOR_ACT: Record<string, string> = { 'Actividad 2': '#059669', 'Actividad 3': '#d97706', 'Actividad 4': '#dc2626' }
 const colorDe = (act: string, i: number) => COLOR_ACT[act] ?? COLORES[i % COLORES.length]
+const TURNO_COLOR: Record<string, string> = { M: '#059669', T: '#2563eb', N: '#7c3aed' }
 
 export function MaquinistasTab() {
   const { data, isLoading } = useQuery({ queryKey: ['maq'], queryFn: () => fetchDatos<MaqData>('maq') })
@@ -118,6 +132,12 @@ export function MaquinistasTab() {
   // etiqueta corta para el eje del grafico horizontal ("Varias (XXX)" se recorta)
   const navesChart = naves.slice(0, 12).map((x) => ({ ...x, naveCorta: x.codigo === 'XXX' ? 'Varias' : x.nave }))
 
+  // perfil horario: top 3 horas y su concentración sobre el total del día
+  const porHora = data.porHora ?? []
+  const sumaDia = porHora.reduce((acc, x) => acc + x.total, 0) || 1
+  const horasTop = [...porHora].sort((a, b) => b.total - a.total).slice(0, 3)
+  const concTop = Math.round((horasTop.reduce((acc, x) => acc + x.total, 0) / sumaDia) * 100)
+
   return (
     <div className="space-y-4">
       <Alert>
@@ -142,7 +162,7 @@ export function MaquinistasTab() {
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi titulo="Bultos movidos" valor={data.bultos ?? 0} icono={Boxes} />
-        <Kpi titulo="Movimientos de clark" valor={data.movimientos ?? 0} icono={ArrowRightLeft} detalle="Viajes / movimientos registrados" />
+        <Kpi titulo="Movimientos de clark" valor={data.movimientos ?? 0} icono={ArrowRightLeft} detalle={data.horaPico ? `Viajes registrados · hora pico ${data.horaPico.hora}h (${n1(data.horaPico.promDia)} mov/día)` : 'Viajes / movimientos registrados'} />
         <Kpi
           titulo="Actividad con más gente"
           valor={acts[0]?.actividad ?? '—'}
@@ -369,7 +389,10 @@ export function MaquinistasTab() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Distribución por turno</CardTitle>
-            <CardDescription>Personas promedio por turno y actividad dentro de cada turno</CardDescription>
+            <CardDescription>
+              Personas promedio por turno y actividad; dentro de cada turno, cuántas hacen apros y cuántas homogéneos y en qué
+              actividad están
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {turnos.map((t) => (
@@ -377,7 +400,7 @@ export function MaquinistasTab() {
                 <div className="flex items-baseline justify-between gap-2 mb-1">
                   <p className="text-sm font-semibold">{TURNO_LABEL[t.turno] ?? t.turno}</p>
                   <p className="text-xs text-muted-foreground tabular-nums">
-                    {n1(t.personasPromDia)} personas/día · {n(t.bultos)} bultos · {n(t.movimientos)} movimientos
+                    {n1(t.personasPromDia)} personas/día · {n(t.movimientos)} movimientos · {n(t.bultos)} bultos
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -387,11 +410,81 @@ export function MaquinistasTab() {
                     </span>
                   ))}
                 </div>
+                {data.tareas?.conDatos && (
+                  <div className="mt-1.5 space-y-1">
+                    {([
+                      ['apros', t.personasPromApros],
+                      ['homogeneos', t.personasPromHom],
+                    ] as const).map(([tarea, prom]) => {
+                      const filas = (t.porTareaActividad ?? []).filter((x) => x.tarea === tarea)
+                      if (prom == null && !filas.length) return null
+                      return (
+                        <p key={tarea} className="text-xs text-muted-foreground leading-relaxed">
+                          <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-semibold text-white ${tarea === 'apros' ? 'bg-blue-600' : 'bg-amber-600'}`}>
+                            {tarea === 'apros' ? 'Apros' : 'Homogéneos'}
+                          </span>{' '}
+                          <b className="text-foreground">{n1(prom)}</b> pers/día
+                          {filas.length > 0 && <> — {filas.map((x) => `${x.actividad}: ${n1(x.personasPromDia)}`).join(' · ')}</>}
+                        </p>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             ))}
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Clock3 className="h-4 w-4" /> Movimientos por horario
+          </CardTitle>
+          <CardDescription>
+            Cuándo se mueven los clarks: movimientos promedio por hora del día (columnas HORA_00..23 del reporte). El foco está
+            en el perfil horario, no en los bultos
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {data.tieneHorario && porHora.length > 0 ? (
+            <>
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={porHora} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={0} />
+                    <YAxis tick={{ fontSize: 11 }} />
+                    <Tooltip
+                      formatter={(v: number, name: string) => [n1(v), name]}
+                      labelFormatter={(v) => `Hora ${v}`}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Bar dataKey="M" name="Mañana (6-14)" stackId="t" fill={TURNO_COLOR.M} />
+                    <Bar dataKey="T" name="Tarde (14-22)" stackId="t" fill={TURNO_COLOR.T} />
+                    <Bar dataKey="N" name="Noche (23-6)" stackId="t" fill={TURNO_COLOR.N} radius={[3, 3, 0, 0]} />
+                    <Line type="monotone" dataKey="total" name="Total mov/día" stroke="#e11d48" strokeWidth={2} dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Barras apiladas por turno y línea de total: movimientos promedio de cada hora a lo largo de {n(data.dias)} días.
+                Las horas más activas son <b>{horasTop.map((x) => x.etiqueta).join(', ')}</b> ({concTop}% de los movimientos del
+                día){data.horaPico ? <> y la pico es <b>{`${data.horaPico.hora}h`}</b> con {n1(data.horaPico.promDia)} mov/día</> : null}.
+              </p>
+            </>
+          ) : (
+            <Alert>
+              <Clock3 className="h-4 w-4" />
+              <AlertTitle className="text-sm">Detalle horario no disponible en los datos cargados</AlertTitle>
+              <AlertDescription className="text-xs leading-relaxed">
+                Esta sección usa las columnas HORA_00..23 del H61 de maquinistas. La carga actual no las incluye: volvé a subir
+                el archivo (Carga de Datos → tarjeta MAQ) y el perfil horario se activa solo, junto con el resto del análisis.
+              </AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-2">
@@ -441,6 +534,11 @@ export function MaquinistasTab() {
           y <b>homogéneos</b> = TOT_HOMOGENEOS (STD + REALMAC_XD + REALMAC_STD), contados en movimientos. Apros y homogéneos
           no dependen de la actividad: la actividad 2 y la 4 hacen ambas tareas (verificado en el archivo), por eso se
           clasifica a las personas por los movimientos registrados y no por la actividad.
+          <br />
+          El perfil horario sale de las columnas <b>HORA_00..23</b> (movimientos por hora): importa cuándo se mueve cada
+          clark — el momento y el ritmo de los movimientos — más que la cantidad de bultos trasladados. El desglose por hora
+          es de movimientos totales; el reporte no reparte apros/homogéneos por hora, esa distinción queda a nivel persona,
+          turno y actividad.
         </AlertDescription>
       </Alert>
     </div>

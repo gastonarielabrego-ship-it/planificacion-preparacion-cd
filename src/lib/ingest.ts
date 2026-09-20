@@ -434,13 +434,15 @@ function mapMaq(r: Record<string, unknown>) {
   const homogeneos = Math.max(0, Math.round(num(r.TOT_HOMOGENEOS) ?? 0))
   const horasIdx: number[] = []
   horasRow.forEach((v, i) => { if (v !== 0) horasIdx.push(i) })
-  return { fecha, turno, operario, nombre, actividad, nave, total, bultos, apros, homogeneos, horasIdx }
+  // vector de movimientos por hora (acotado a >= 0); Σ horasVec == total
+  const horasVec = horasRow.map((v) => Math.max(0, v))
+  return { fecha, turno, operario, nombre, actividad, nave, total, bultos, apros, homogeneos, horasIdx, horasVec }
 }
 
 async function ingestMaq(records: Iterable<Record<string, unknown>>) {
   // clave = fecha|turno|operario|actividad|nave: el archivo puede traer varias filas
   // para la misma combinacion (distintos aperos/bloques) — se suman y las horas se deduplican
-  const opNave = new Map<string, { fecha: Date; turno: string; operario: string; nombre: string | null; actividad: string; nave: string; total: number; bultos: number; apros: number; homogeneos: number; horasSet: Set<number> }>()
+  const opNave = new Map<string, { fecha: Date; turno: string; operario: string; nombre: string | null; actividad: string; nave: string; total: number; bultos: number; apros: number; homogeneos: number; horasSet: Set<number>; horasVec: number[] }>()
   // pre-agregados por fecha x actividad y fecha x nave: horas unicas por operario
   const act = new Map<string, { fecha: Date; actividad: string; bultos: number; ops: Set<string>; horasPorOp: Map<string, Set<number>> }>()
   const nav = new Map<string, { fecha: Date; nave: string; bultos: number; ops: Set<string>; horasPorOp: Map<string, Set<number>> }>()
@@ -454,7 +456,7 @@ async function ingestMaq(records: Iterable<Record<string, unknown>>) {
     const k = `${fISO}|${m.turno}|${m.operario}|${m.actividad}|${m.nave}`
     let o = opNave.get(k)
     if (!o) {
-      o = { fecha: m.fecha, turno: m.turno, operario: m.operario, nombre: m.nombre, actividad: m.actividad, nave: m.nave, total: 0, bultos: 0, apros: 0, homogeneos: 0, horasSet: new Set() }
+      o = { fecha: m.fecha, turno: m.turno, operario: m.operario, nombre: m.nombre, actividad: m.actividad, nave: m.nave, total: 0, bultos: 0, apros: 0, homogeneos: 0, horasSet: new Set(), horasVec: new Array(24).fill(0) }
       opNave.set(k, o)
     }
     if (!o.nombre && m.nombre) o.nombre = m.nombre
@@ -463,6 +465,7 @@ async function ingestMaq(records: Iterable<Record<string, unknown>>) {
     o.apros += m.apros
     o.homogeneos += m.homogeneos
     for (const h of m.horasIdx) o.horasSet.add(h)
+    for (let i = 0; i < 24; i++) o.horasVec[i] += m.horasVec[i]
 
     const ka = `${fISO}|${m.actividad}`
     let a = act.get(ka)
@@ -483,7 +486,16 @@ async function ingestMaq(records: Iterable<Record<string, unknown>>) {
     for (const h of m.horasIdx) hn.add(h)
   }
 
-  const opRows = [...opNave.values()].map((o) => ({ fecha: o.fecha, turno: o.turno, operario: o.operario, nombre: o.nombre, actividad: o.actividad, nave: o.nave, total: o.total, bultos: o.bultos, apros: o.apros, homogeneos: o.homogeneos, horas: o.horasSet.size }))
+  const opRows = [...opNave.values()].map((o) => ({
+    fecha: o.fecha, turno: o.turno, operario: o.operario, nombre: o.nombre, actividad: o.actividad, nave: o.nave,
+    total: o.total, bultos: o.bultos, apros: o.apros, homogeneos: o.homogeneos, horas: o.horasSet.size,
+    hora00: o.horasVec[0], hora01: o.horasVec[1], hora02: o.horasVec[2], hora03: o.horasVec[3],
+    hora04: o.horasVec[4], hora05: o.horasVec[5], hora06: o.horasVec[6], hora07: o.horasVec[7],
+    hora08: o.horasVec[8], hora09: o.horasVec[9], hora10: o.horasVec[10], hora11: o.horasVec[11],
+    hora12: o.horasVec[12], hora13: o.horasVec[13], hora14: o.horasVec[14], hora15: o.horasVec[15],
+    hora16: o.horasVec[16], hora17: o.horasVec[17], hora18: o.horasVec[18], hora19: o.horasVec[19],
+    hora20: o.horasVec[20], hora21: o.horasVec[21], hora22: o.horasVec[22], hora23: o.horasVec[23],
+  }))
   const actRows = [...act.values()].map((a) => ({ fecha: a.fecha, actividad: a.actividad, bultos: a.bultos, operarios: a.ops.size, horas: [...a.horasPorOp.values()].reduce((acc, s) => acc + s.size, 0) }))
   const navRows = [...nav.values()].map((v) => ({ fecha: v.fecha, nave: v.nave, bultos: v.bultos, operarios: v.ops.size, horas: [...v.horasPorOp.values()].reduce((acc, s) => acc + s.size, 0) }))
 

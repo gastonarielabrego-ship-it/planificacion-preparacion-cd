@@ -1240,6 +1240,14 @@ export async function getMaquinistas(f: Filtros) {
   // suma de movimientos por tarea para persona-día (fecha|operario) y persona-día-actividad
   const opDiaTarea = new Map<string, { ap: number; ho: number }>()
   const opDiaActTarea = new Map<string, { ap: number; ho: number }>()
+  // mismo cruce dentro de cada TURNO (fecha|turno|operario y fecha|turno|operario|actividad)
+  const opDiaTurnoTarea = new Map<string, { ap: number; ho: number }>()
+  const opDiaTurnoActTarea = new Map<string, { ap: number; ho: number }>()
+
+  // ---- MOVIMIENTOS POR HORARIO (HORA_00..23 del reporte) ----
+  const horaTotal = new Array(24).fill(0)
+  const horaTurno = new Map<string, number[]>()
+  let tieneHorario = false
 
   for (const rw of rows) {
     const fISO = dia(rw.fecha)
@@ -1268,6 +1276,31 @@ export async function getMaquinistas(f: Filtros) {
     aAcc.ap += (rw as { apros?: number }).apros ?? 0
     aAcc.ho += (rw as { homogeneos?: number }).homogeneos ?? 0
     opDiaActTarea.set(ka2, aAcc)
+
+    // tareas dentro del turno
+    const kt = `${kd}|${rw.turno}`
+    const tAcc = opDiaTurnoTarea.get(kt) ?? { ap: 0, ho: 0 }
+    tAcc.ap += (rw as { apros?: number }).apros ?? 0
+    tAcc.ho += (rw as { homogeneos?: number }).homogeneos ?? 0
+    opDiaTurnoTarea.set(kt, tAcc)
+    const kta = `${kt}|${rw.actividad}`
+    const taAcc = opDiaTurnoActTarea.get(kta) ?? { ap: 0, ho: 0 }
+    taAcc.ap += (rw as { apros?: number }).apros ?? 0
+    taAcc.ho += (rw as { homogeneos?: number }).homogeneos ?? 0
+    opDiaTurnoActTarea.set(kta, taAcc)
+
+    // perfil horario: movimientos por hora del día, global y por turno
+    const rr = rw as unknown as Record<string, number | null>
+    let ht = horaTurno.get(rw.turno)
+    if (!ht) { ht = new Array(24).fill(0); horaTurno.set(rw.turno, ht) }
+    for (let h = 0; h < 24; h++) {
+      const v = rr[`hora${String(h).padStart(2, '0')}`] ?? 0
+      if (v > 0) {
+        tieneHorario = true
+        horaTotal[h] += v
+        ht[h] += v
+      }
+    }
   }
 
   // personas promedio por dia del corte = suma de personas de cada dia / dias con datos
@@ -1318,6 +1351,43 @@ export async function getMaquinistas(f: Filtros) {
 
   // turno: personas promedio y desglose por actividad dentro de cada turno
   const turnosOrden = ['M', 'T', 'N', '?'].filter((t) => porTurno.has(t))
+  // personas por tarea dentro de cada turno (de los acumuladores fecha|turno|operario[|actividad])
+  const opsTareaTurno = new Map<string, { ap: Map<string, Set<string>>; ho: Map<string, Set<string>> }>()
+  for (const [k, acc] of opDiaTurnoTarea) {
+    const partes = k.split('|') // fecha|operario|turno
+    const fISO = partes[0]
+    const op = partes[1]
+    const turno = partes[2]
+    let t = opsTareaTurno.get(turno)
+    if (!t) { t = { ap: new Map(), ho: new Map() }; opsTareaTurno.set(turno, t) }
+    if (acc.ap > 0) { let s = t.ap.get(fISO); if (!s) { s = new Set(); t.ap.set(fISO, s) } s.add(op) }
+    if (acc.ho > 0) { let s = t.ho.get(fISO); if (!s) { s = new Set(); t.ho.set(fISO, s) } s.add(op) }
+  }
+  const promDe = (m: Map<string, Set<string>>): number | null => {
+    if (!m.size) return null
+    let sum = 0
+    for (const s of m.values()) sum += s.size
+    return r1(sum / m.size)
+  }
+  // tarea x actividad x turno: personas promedio por día haciendo ESA tarea en ESA actividad en ESE turno
+  const tareaTurnoAcc = new Map<string, { porDia: Map<string, Set<string>>; mov: number; ops: Set<string> }>()
+  for (const [k, acc] of opDiaTurnoActTarea) {
+    const partes = k.split('|') // fecha|operario|turno|actividad
+    const fISO = partes[0]
+    const op = partes[1]
+    const turno = partes[2]
+    const actv = partes[3]
+    for (const [tarea, mov] of [['apros', acc.ap], ['homogeneos', acc.ho]] as const) {
+      if (mov <= 0) continue
+      const kk = `${turno}|${tarea}|${actv}`
+      let t = tareaTurnoAcc.get(kk)
+      if (!t) { t = { porDia: new Map(), mov: 0, ops: new Set() }; tareaTurnoAcc.set(kk, t) }
+      t.mov += mov
+      t.ops.add(op)
+      let s = t.porDia.get(fISO); if (!s) { s = new Set(); t.porDia.set(fISO, s) }
+      s.add(op)
+    }
+  }
   const porTurnoOut = turnosOrden.map((turno) => {
     const t = porTurno.get(turno)!
     const acts = turnosOrden.length
@@ -1326,7 +1396,32 @@ export async function getMaquinistas(f: Filtros) {
           .map(([k, a]) => ({ actividad: etiquetaAct(k.split('|')[1]), personasProm: personasProm(a), operarios: a.ops.size }))
           .sort((a, b) => (b.personasProm ?? 0) - (a.personasProm ?? 0))
       : []
-    return { turno, personasPromDia: personasProm(t), operarios: t.ops.size, movimientos: t.mov, bultos: t.bul, porActividad: acts }
+    const tt = opsTareaTurno.get(turno)
+    const porTareaActividad = [...tareaTurnoAcc.entries()]
+      .filter(([k]) => k.startsWith(`${turno}|`))
+      .map(([k, a]) => {
+        const [, tarea, actv] = k.split('|')
+        return {
+          tarea,
+          actividad: etiquetaAct(actv),
+          codigo: actv,
+          personasPromDia: promDe(a.porDia),
+          operarios: a.ops.size,
+          movimientos: a.mov,
+        }
+      })
+      .sort((a, b) => a.tarea.localeCompare(b.tarea) || (b.personasPromDia ?? 0) - (a.personasPromDia ?? 0))
+    return {
+      turno,
+      personasPromDia: personasProm(t),
+      operarios: t.ops.size,
+      movimientos: t.mov,
+      bultos: t.bul,
+      porActividad: acts,
+      personasPromApros: tt ? promDe(tt.ap) : null,
+      personasPromHom: tt ? promDe(tt.ho) : null,
+      porTareaActividad,
+    }
   })
 
   // naves por operario por dia: indicador de dispersión (cuantas naves atiende cada persona)
@@ -1471,6 +1566,28 @@ export async function getMaquinistas(f: Filtros) {
         }
       })
       .sort((a, b) => (b.personasPromDia ?? 0) - (a.personasPromDia ?? 0)),
+    // perfil horario: movimientos promedio por hora del día (total + por turno pivoteado)
+    porHora: Array.from({ length: 24 }, (_, h) => {
+      const fila: { hora: number; etiqueta: string; total: number; M: number; T: number; N: number } = {
+        hora: h,
+        etiqueta: `${String(h).padStart(2, '0')}h`,
+        total: r1(horaTotal[h] / diasSet.size),
+        M: 0,
+        T: 0,
+        N: 0,
+      }
+      for (const [t, vec] of horaTurno) {
+        if (t === 'M' || t === 'T' || t === 'N') fila[t] = r1(vec[h] / diasSet.size)
+      }
+      return fila
+    }),
+    horaPico: (() => {
+      if (!tieneHorario) return null
+      let best = 0
+      for (let h = 1; h < 24; h++) if (horaTotal[h] > horaTotal[best]) best = h
+      return { hora: best, movimientos: horaTotal[best], promDia: r1(horaTotal[best] / diasSet.size) }
+    })(),
+    tieneHorario,
     porTurno: porTurnoOut,
     porMesActividad,
     porMesNave: porMesNaveFiltrado(mesNav, topNaves),
