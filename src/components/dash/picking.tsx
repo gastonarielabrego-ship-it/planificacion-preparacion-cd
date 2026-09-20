@@ -13,6 +13,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 interface PickingData {
   registros: number
   vacio?: boolean
+  grano?: 'resumen' | 'detalle'
   desde?: string
   hasta?: string
   meses?: number
@@ -28,6 +29,7 @@ interface PickingData {
   trasladoPromedio?: number | null
   trasladoMediana?: number | null
   distribucionTraslados?: { bucket: string; cantidad: number }[]
+  muertoBloques?: { promedio: number | null; mediana: number | null; distribucion: { bucket: string; cantidad: number }[]; conMuerto: boolean }
   tiempos?: { horasTotal: number; horasMuerto: number; horasNeto: number; horasTraslados: number; horasSuperNeto: number; pctMuerto: number | null }
   productividad?: { total: number | null; neta: number | null; superNeta: number | null }
   topColaborador?: { operario: string; nombre: string; bultos: number; prodSuperNeta: number | null } | null
@@ -48,16 +50,15 @@ export function PickingTab() {
       <div className="space-y-4">
         <Alert>
           <UploadCloud className="h-4 w-4" />
-          <AlertTitle>Módulo Picking (E-8) — esperando el archivo</AlertTitle>
+          <AlertTitle>Módulo Picking (E-8) — esperando datos</AlertTitle>
           <AlertDescription className="leading-relaxed">
-            Este módulo toma el <b>reporte E-8</b> (producción por picking / log WMS). Cuando lo cargues calcula:
-            <b> tiempo muerto promedio y mediana entre pickings</b>, bultos por zona (naves), personas asignadas a cada
-            actividad, <b>recorridos más largos</b>, tiempo de traslado entre ubicaciones, top colaborador y
-            <b> productividad neta y super neta</b>.
+            Este módulo toma el <b>reporte E-8</b> en sus dos formatos: el <b>log evento a evento</b> (produccion picking…,
+            con hora y ubicación) o el <b>resumen por colaborador</b> ("Tiempos E-8" / Productividad X Circuito, ene→ago 2026).
+            Calcula: <b>tiempo muerto promedio y mediana</b>, bultos por zona/circuito, personas asignadas a cada actividad,
+            <b> recorridos y traslados</b> (solo con el log detalle), top colaborador y <b>productividad neta y super neta</b>.
             <br />
-            Se reconoce automáticamente por el nombre (que incluya “picking”, “piking”, “pickeo” o “E-8”). Podés subirlo
-            directo acá (se envía por partes automáticamente, sin límite de tamaño) o con el script
-            <code className="rounded bg-muted px-1">subir_archivo.py</code>.
+            Se reconoce automáticamente por el nombre ("picking", "piking", "pickeo", "E-8", "productividad…circuito"). Podés
+            subirlo acá (por partes, sin límite) o con el script <code className="rounded bg-muted px-1">subir_archivo.py</code>.
           </AlertDescription>
         </Alert>
         <SinDatos mensaje="No hay eventos de picking cargados todavía." />
@@ -68,28 +69,36 @@ export function PickingTab() {
   const t = data.tiempos
   const p = data.productividad
   const umbral = data.umbralMuertoMin ?? 2
-  const totalGaps = (data.distribucionGaps ?? []).reduce((a, b) => a + b.cantidad, 0) || 1
+  const resumen = data.grano === 'resumen'
+  const totalGaps = (resumen ? data.muertoBloques?.distribucion : data.distribucionGaps)?.reduce((a, b) => a + b.cantidad, 0) || 1
   const totalTraslados = (data.distribucionTraslados ?? []).reduce((a, b) => a + b.cantidad, 0) || 1
 
   return (
     <div className="space-y-4">
       <Alert>
         <Boxes className="h-4 w-4" />
-        <AlertTitle className="text-sm">Fuente del análisis: reporte E-8 (producción por picking)</AlertTitle>
+        <AlertTitle className="text-sm">Fuente del análisis: reporte E-8 {resumen ? '(resumen por colaborador — "Tiempos E-8")' : '(log de picking evento a evento)'}</AlertTitle>
         <AlertDescription className="text-xs leading-relaxed">
           Período con datos: <b>{data.desde ? `${fechaCorta(data.desde)} → ${fechaCorta(data.hasta)}` : '—'}</b>
           {data.meses != null && <> · <b>{data.meses}</b> {data.meses === 1 ? 'mes' : 'meses'}</>}
           {(data.fuentes ?? []).length > 0 && (
             <> · Archivos tomados en cuenta: {(data.fuentes ?? []).map((f) => f.filename || '(sin nombre)').join(', ')}</>
           )}
+          {resumen && (
+            <> · Cada fila del reporte (colaborador × día × turno × circuito) se toma como un <b>bloque</b> con sus horas informadas.</>
+          )}
         </AlertDescription>
       </Alert>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Kpi titulo="Eventos de picking" valor={data.registros} icono={Boxes} detalle={data.desde ? `${fechaCorta(data.desde)} → ${fechaCorta(data.hasta)}` : undefined} />
+        <Kpi titulo={resumen ? 'Bloques colaborador-día' : 'Eventos de picking'} valor={data.registros} icono={Boxes} detalle={data.desde ? `${fechaCorta(data.desde)} → ${fechaCorta(data.hasta)}` : undefined} />
         <Kpi titulo="Operarios" valor={data.operarios ?? 0} icono={User} />
         <Kpi titulo="Bultos levantados" valor={data.bultos ?? 0} icono={Boxes} />
-        <Kpi titulo="Gap promedio entre pickings" valor={data.gapPromedio ?? 0} formato="decimal" unidad="min" icono={Clock3} tono="atencion" detalle={`Mediana: ${n1(data.gapMediana)} min — umbral muerto > ${umbral} min`} />
+        {resumen ? (
+          <Kpi titulo="Tiempo muerto por bloque" valor={data.muertoBloques?.promedio ?? 0} formato="decimal" unidad="min" icono={Clock3} tono="atencion" detalle={`Mediana: ${n1(data.muertoBloques?.mediana)} min por bloque (colaborador-turno-circuito)`} />
+        ) : (
+          <Kpi titulo="Gap promedio entre pickings" valor={data.gapPromedio ?? 0} formato="decimal" unidad="min" icono={Clock3} tono="atencion" detalle={`Mediana: ${n1(data.gapMediana)} min — umbral muerto > ${umbral} min`} />
+        )}
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi titulo="Prod. neta" valor={p?.neta ?? 0} formato="decimal" unidad="bult/h" icono={Gauge} detalle={`Total (con muertos): ${n1(p?.total ?? 0)} bult/h`} />
@@ -109,28 +118,39 @@ export function PickingTab() {
         <Gauge className="h-4 w-4" />
         <AlertTitle className="text-sm">Cómo se calcula la productividad</AlertTitle>
         <AlertDescription className="text-xs leading-relaxed">
-          <b>Tiempo total</b> = jornada observada (primer → último evento del día). <b>Tiempo muerto</b> = suma de gaps mayores a {umbral} min.
-          <b> Tiempo neto</b> = total − muertos. <b>Tiempo super neto</b> = tiempo de operación WMS (columna MINUTOS) acotado al neto;
-          sin MINUTOS, super neto = neto. <b>Traslados</b> = neto − super neto. Prod. neta y super neta = bultos ÷ cada tiempo.
-          {!data.conUbicacion && ' ⚠︎ El archivo no trae ubicación (ZONSTS/ALLSTS/NIVSTS): traslados y recorridos quedan sin efecto.'}
+          {resumen ? (
+            <>
+              Los tiempos salen de las columnas del reporte: <b>Tiempo total</b>, <b>Tiempo muerto</b>, <b>Tiempo neto</b> y
+              <b> Tiempo super neto</b> (informados por bloque). Prod. neta y super neta = bultos ÷ cada tiempo.
+              ⚠︎ Grano resumen: sin hora ni ubicación evento a evento — gaps entre pickings, traslados y recorridos
+              requieren el log detallado (produccion picking…).
+            </>
+          ) : (
+            <>
+              <b>Tiempo total</b> = jornada observada (primer → último evento del día). <b>Tiempo muerto</b> = suma de gaps mayores a {umbral} min.
+              <b> Tiempo neto</b> = total − muertos. <b>Tiempo super neto</b> = tiempo de operación WMS (columna MINUTOS) acotado al neto;
+              sin MINUTOS, super neto = neto. <b>Traslados</b> = neto − super neto. Prod. neta y super neta = bultos ÷ cada tiempo.
+              {!data.conUbicacion && ' ⚠︎ El archivo no trae ubicación (ZONSTS/ALLSTS/NIVSTS): traslados y recorridos quedan sin efecto.'}
+            </>
+          )}
         </AlertDescription>
       </Alert>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Distribución de tiempos muertos entre pickings</CardTitle>
-            <CardDescription>Porcentaje de gaps en cada rango de minutos</CardDescription>
+            <CardTitle className="text-base">{resumen ? 'Distribución del tiempo muerto por bloque' : 'Distribución de tiempos muertos entre pickings'}</CardTitle>
+            <CardDescription>{resumen ? 'Bloques (colaborador × día × turno × circuito) según minutos muertos informados' : 'Porcentaje de gaps en cada rango de minutos'}</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={(data.distribucionGaps ?? []).map((d) => ({ ...d, p: +((d.cantidad / totalGaps) * 100).toFixed(1) }))} margin={{ left: 4, right: 8, top: 8, bottom: 0 }}>
+              <BarChart data={(resumen ? (data.muertoBloques?.distribucion ?? []) : (data.distribucionGaps ?? [])).map((d) => ({ ...d, p: +((d.cantidad / totalGaps) * 100).toFixed(1) }))} margin={{ left: 4, right: 8, top: 8, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="bucket" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} unit="%" />
                 <Tooltip formatter={(v: number) => [`${n1(v)}%`, 'Proporción']} />
                 <Bar dataKey="p" radius={[3, 3, 0, 0]}>
-                  {(data.distribucionGaps ?? []).map((_, i) => <Cell key={i} fill={i >= 4 ? '#dc2626' : i >= 2 ? '#d97706' : '#059669'} />)}
+                  {(resumen ? data.muertoBloques?.distribucion ?? [] : data.distribucionGaps ?? []).map((_, i) => <Cell key={i} fill={i >= 4 ? '#dc2626' : i >= 2 ? '#d97706' : '#059669'} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -139,8 +159,8 @@ export function PickingTab() {
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Bultos levantados por zona (naves)</CardTitle>
-            <CardDescription>Volumen, eventos y personas por zona del depósito</CardDescription>
+            <CardTitle className="text-base">{resumen ? 'Bultos levantados por circuito (Sector)' : 'Bultos levantados por zona (naves)'}</CardTitle>
+            <CardDescription>{resumen ? 'ACT2 / ACT4 / JAULA / XD según la columna Sector del reporte' : 'Volumen, eventos y personas por zona del depósito'}</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={280}>
@@ -159,34 +179,50 @@ export function PickingTab() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Traslados entre ubicaciones</CardTitle>
-            <CardDescription>Gap al cambiar de ubicación ({n(data.cambiosUbicacion ?? 0)} cambios detectados)</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={(data.distribucionTraslados ?? []).map((d) => ({ ...d, p: +((d.cantidad / totalTraslados) * 100).toFixed(1) }))} margin={{ left: 4, right: 8, top: 8, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="bucket" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} unit="%" />
-                <Tooltip formatter={(v: number) => [`${n1(v)}%`, 'Proporción']} />
-                <Bar dataKey="p" radius={[3, 3, 0, 0]}>
-                  {(data.distribucionTraslados ?? []).map((_, i) => <Cell key={i} fill={i >= 4 ? '#dc2626' : i >= 2 ? '#d97706' : '#0d9488'} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-            <p className="text-xs text-muted-foreground mt-2">
-              Promedio {n1(data.trasladoPromedio)} min · mediana {n1(data.trasladoMediana)} min por cambio de ubicación
-              {(data.paresZona ?? []).length > 0 && ' — ver pares de zonas más lentos abajo'}
-            </p>
-          </CardContent>
-        </Card>
+        {resumen ? (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Análisis de detalle no disponible en este grano</CardTitle>
+              <CardDescription>El resumen por colaborador no trae hora ni ubicación evento a evento</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground py-2 leading-relaxed">
+                Los <b>gaps entre pickings</b>, los <b>traslados entre ubicaciones</b> y los <b>recorridos más largos</b> se calculan
+                con el log detallado del E-8 (archivo tipo “produccion picking…” con CODUTI/FECHA/HORA/ZONSTS/ALLSTS).
+                Cuando lo cargues reemplaza este grano y activa esas secciones automáticamente.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Traslados entre ubicaciones</CardTitle>
+              <CardDescription>Gap al cambiar de ubicación ({n(data.cambiosUbicacion ?? 0)} cambios detectados)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={(data.distribucionTraslados ?? []).map((d) => ({ ...d, p: +((d.cantidad / totalTraslados) * 100).toFixed(1) }))} margin={{ left: 4, right: 8, top: 8, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="bucket" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} unit="%" />
+                  <Tooltip formatter={(v: number) => [`${n1(v)}%`, 'Proporción']} />
+                  <Bar dataKey="p" radius={[3, 3, 0, 0]}>
+                    {(data.distribucionTraslados ?? []).map((_, i) => <Cell key={i} fill={i >= 4 ? '#dc2626' : i >= 2 ? '#d97706' : '#0d9488'} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <p className="text-xs text-muted-foreground mt-2">
+                Promedio {n1(data.trasladoPromedio)} min · mediana {n1(data.trasladoMediana)} min por cambio de ubicación
+                {(data.paresZona ?? []).length > 0 && ' — ver pares de zonas más lentos abajo'}
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Eventos por día</CardTitle>
-            <CardDescription>Volumen de levantes y gap promedio del día</CardDescription>
+            <CardTitle className="text-base">{resumen ? 'Bloques y bultos por día' : 'Eventos por día'}</CardTitle>
+            <CardDescription>{resumen ? 'Volumen diario de bloques y bultos del resumen E-8' : 'Volumen de levantes y gap promedio del día'}</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={260}>
@@ -197,8 +233,8 @@ export function PickingTab() {
                 <YAxis yAxisId="g" orientation="right" tick={{ fontSize: 10 }} unit=" min" />
                 <Tooltip formatter={(v: number) => n(v)} />
                 <Legend />
-                <Bar yAxisId="e" dataKey="eventos" name="Eventos" fill={COLORES[0]} radius={[3, 3, 0, 0]} />
-                <Line yAxisId="g" dataKey="gapPromedio" name="Gap prom. (min)" stroke="#dc2626" strokeWidth={2} dot={false} />
+                <Bar yAxisId="e" dataKey="eventos" name={resumen ? 'Bloques' : 'Eventos'} fill={COLORES[0]} radius={[3, 3, 0, 0]} />
+                {!resumen && <Line yAxisId="g" dataKey="gapPromedio" name="Gap prom. (min)" stroke="#dc2626" strokeWidth={2} dot={false} />}
               </ComposedChart>
             </ResponsiveContainer>
           </CardContent>
@@ -249,7 +285,7 @@ export function PickingTab() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2"><Users className="h-4 w-4" /> Personas asignadas por actividad</CardTitle>
-            <CardDescription>Colaboradores distintos y promedio de personas por día en cada actividad (CODACT)</CardDescription>
+            <CardDescription>{resumen ? 'Según la columna Tipo del reporte (Soporte / Notas): colaboradores distintos y promedio de personas por día' : 'Colaboradores distintos y promedio de personas por día en cada actividad (CODACT)'}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="max-h-80 overflow-y-auto">
@@ -282,7 +318,7 @@ export function PickingTab() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2"><ArrowRightLeft className="h-4 w-4" /> Traslados más lentos entre zonas</CardTitle>
-            <CardDescription>Pares zona → zona con mayor tiempo promedio de traslado (mín. 5 casos)</CardDescription>
+            <CardDescription>Pares zona → zona con mayor tiempo promedio de traslado (mín. 5 casos){resumen && ' — requiere el log detallado'}</CardDescription>
           </CardHeader>
           <CardContent>
             {(data.paresZona ?? []).length === 0 ? (
@@ -316,7 +352,7 @@ export function PickingTab() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2"><Route className="h-4 w-4" /> Recorridos más largos</CardTitle>
-          <CardDescription>Días con más ubicaciones distintas visitadas por un colaborador</CardDescription>
+          <CardDescription>Días con más ubicaciones distintas visitadas por un colaborador{resumen && ' — requiere el log detallado (con hora y ubicación)'}</CardDescription>
         </CardHeader>
         <CardContent>
           {(data.recorridosTop ?? []).length === 0 ? (

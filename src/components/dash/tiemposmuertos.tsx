@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, MapPin, Timer, ToggleLeft } from 'lucide-react'
 import { Kpi, SinDatos } from './kpi'
 import { fetchDatos, n, n1, pct, fechaCorta, horasHMin, COLORES } from '@/lib/client'
+import { etiquetaCategoria } from '@/lib/normaliza'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid, ComposedChart, Line, Legend } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -42,7 +43,7 @@ export function TiemposMuertosTab() {
   // pareto con acumulado
   const pareto = data.porCategoria.map((c, i) => {
     const acum = data.porCategoria.slice(0, i + 1).reduce((a, x) => a + x.minutos, 0)
-    return { ...c, horas: +(c.minutos / 60).toFixed(1), acumPct: +((acum / data.totalMin) * 100).toFixed(1) }
+    return { ...c, etiqueta: etiquetaCategoria(c.categoria), horas: +(c.minutos / 60).toFixed(1), acumPct: +((acum / data.totalMin) * 100).toFixed(1) }
   })
 
   return (
@@ -54,21 +55,21 @@ export function TiemposMuertosTab() {
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi titulo="Tiempo muerto total" valor={data.totalHoras} unidad="h" formato="decimal" icono={Timer} detalle={`${n(data.registros)} eventos informados`} tono="alerta" />
-        <Kpi titulo="Motivo n° 1" valor={data.porCategoria[0]?.categoria ?? '—'} formato="texto" icono={AlertTriangle} detalle={`${horasHMin(data.porCategoria[0]?.minutos ?? 0)} · ${pct(data.porCategoria[0]?.pct ?? 0)} del total`} tono="atencion" />
-        <Kpi titulo="Esperas por ubicación" valor={data.navesResumen.minutos / 60} unidad="h" icono={MapPin} detalle={`${data.navesResumen.naves} naves y ${data.navesResumen.pasillos} pasillos afectados`} tono="alerta" />
+        <Kpi titulo="Motivo n° 1" valor={data.porCategoria[0] ? etiquetaCategoria(data.porCategoria[0].categoria) : '—'} formato="texto" icono={AlertTriangle} detalle={`${horasHMin(data.porCategoria[0]?.minutos ?? 0)} · ${pct(data.porCategoria[0]?.pct ?? 0)} del total`} tono="atencion" />
+        <Kpi titulo="Espera de piking con ubicación" valor={data.navesResumen.minutos / 60} unidad="h" icono={MapPin} detalle={`${data.navesResumen.naves} naves y ${data.navesResumen.pasillos} pasillos afectados`} tono="alerta" />
         <Kpi titulo="Promedio por evento" valor={data.registros ? data.totalMin / data.registros : 0} formato="decimal" unidad="min" icono={Timer} />
       </div>
 
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Pareto de motivos agrupados</CardTitle>
-          <CardDescription>Los motivos se normalizan desde el texto libre (mayúsculas, tildes y errores de tipeo corregidos). Línea = % acumulado.</CardDescription>
+          <CardDescription>Los motivos se normalizan desde el texto libre (mayúsculas, tildes y errores de tipeo corregidos). “Espera de ubicación”, “espera de piking” y “apro” se unifican en <b>Espera de piking</b>. Línea = % acumulado.</CardDescription>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={340}>
             <ComposedChart data={pareto} margin={{ left: 4, right: 8, top: 8, bottom: 60 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis dataKey="categoria" angle={-30} textAnchor="end" height={70} interval={0} tick={{ fontSize: 10 }} />
+              <XAxis dataKey="etiqueta" angle={-30} textAnchor="end" height={70} interval={0} tick={{ fontSize: 10 }} />
               <YAxis yAxisId="h" tick={{ fontSize: 10 }} />
               <YAxis yAxisId="p" orientation="right" domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
               <Tooltip formatter={(v: number, k: string) => (k === 'horas' ? [`${n1(v)} h`, 'Horas'] : k === 'acumPct' ? [`${n1(v)}%`, 'Acumulado'] : [n(v), 'Eventos'])} />
@@ -84,8 +85,8 @@ export function TiemposMuertosTab() {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">Esperas por nave y pasillo</CardTitle>
-          <CardDescription>Eventos con ubicación en el texto (ej: “ESPERA E-11-124” → nave E, pasillo 11, posición 124). Expandí cada nave para ver sus pasillos.</CardDescription>
+          <CardTitle className="text-base">Espera de piking por nave y pasillo</CardTitle>
+          <CardDescription>Eventos con ubicación puntual en el texto (ej: “ESPERA E-11-124” → nave E, pasillo 11, posición 124). Expandí cada nave para ver sus pasillos.</CardDescription>
         </CardHeader>
         <CardContent>
           {data.porNave.length === 0 ? (
@@ -239,7 +240,7 @@ export function TiemposMuertosTab() {
                   {data.codigoCategoria.map((c, i) => (
                     <TableRow key={i}>
                       <TableCell className="py-1.5 font-medium">{c.code ?? '—'}</TableCell>
-                      <TableCell className="py-1.5">{c.categoria}</TableCell>
+                      <TableCell className="py-1.5">{etiquetaCategoria(c.categoria)}</TableCell>
                       <TableCell className="py-1.5 text-right tabular-nums">{n1(c.minutos / 60)}</TableCell>
                       <TableCell className="py-1.5 text-right tabular-nums">{n(c.registros)}</TableCell>
                     </TableRow>

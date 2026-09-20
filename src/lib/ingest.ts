@@ -106,8 +106,14 @@ function mapTM(r: Record<string, unknown>) {
 }
 
 // Auto-detección server-side de columnas de picking (cuando no hay mapping explícito,
-// ej. subida web directa). Estructura real del export WMS: CODUTI, NOMUTI, FECHA, HORA,
-// CODACT, ZONSTS, ALLSTS, DPLSTS, NIVSTS, CODPRO, PCBPRO, BULTOS, MINUTOS, ALERTA.
+// ej. subida web directa). Soporta DOS granos del reporte E-8:
+//
+// 1) DETALLE (log WMS evento a evento): CODUTI, NOMUTI, FECHA, HORA, CODACT,
+//    ZONSTS, ALLSTS, DPLSTS, NIVSTS, CODPRO, PCBPRO, BULTOS, MINUTOS, ALERTA.
+// 2) RESUMEN ("Colaborador", el Tiempos E-8 clasico): TURNO, Columna1 (fecha),
+//    OPERARIO, NOMUTI, Sector (circuito ACT2/ACT4/JAULA/XD), Tipo (Soporte/Notas),
+//    Soportes, Lineas, Bultos, Tiempo Total/Muerto/Neto/Super Neto (HORAS), PROD_*.
+//    Cada fila se guarda como un "bloque" sin hora; getPicking detecta el grano.
 export function autoMapPicking(muestra: Record<string, unknown>): PickingMapping {
   const cols = Object.keys(muestra).map((k) => k.toUpperCase().replace(/[\s_]/g, ''))
   const buscar = (...candidatos: string[]): string | undefined => {
@@ -117,19 +123,30 @@ export function autoMapPicking(muestra: Record<string, unknown>): PickingMapping
     }
     return undefined
   }
+  const soportesCol = buscar('SOPORTES', 'SOPORT')
   return {
-    fecha: buscar('FECHA', 'DIA', 'DATE', 'FEC'),
+    fecha: buscar('FECHA', 'DIA', 'DATE', 'FEC', 'COLUMNA1', 'COLUMN1'),
     operario: buscar('CODUTI', 'OPERARIO', 'LEGAJO', 'USUARIO'),
     nombre: buscar('NOMUTI', 'NOMBRE'),
     horaMin: buscar('HORA', 'TIME', 'TIMESTAMP'),
     bultos: buscar('BULTO', 'CANTIDAD', 'UNIDAD', 'CANT', 'QTY'),
-    soporte: buscar('SOPORTE', 'PALLET', 'LPN'),
-    circuito: buscar('CODACT', 'CIRCUITO', 'CIRCU'),
-    actividad: buscar('CODACT', 'ACTIVIDAD'),
-    zona: buscar('ZONSTS', 'ZONA', 'NAVE'),
+    // en el resumen "Soportes" es una CANTIDAD (grano resumen), no el ID del pallet:
+    // si el archivo trae la columna de cantidad, soporte solo busca ID de pallet
+    soporte: soportesCol ? buscar('LPN', 'PALLET') : buscar('SOPORTE', 'PALLET', 'LPN'),
+    circuito: buscar('CODACT', 'CIRCUITO', 'CIRCU', 'SECTOR'),
+    actividad: buscar('CODACT', 'ACTIVIDAD', 'TIPO'),
+    zona: buscar('ZONSTS', 'ZONA', 'NAVE', 'SECTOR'),
     ubicacion: buscar('ALLSTS', 'UBICACION', 'PASILLO', 'CALLE'),
     nivel: buscar('NIVSTS', 'NIVEL'),
     minutos: buscar('MINUTOS', 'DURACION'),
+    turno: buscar('TURNO', 'SHIFT'),
+    lineas: buscar('LINEAS', 'LINEA'),
+    muerto: buscar('TIEMPOMUERTO', 'MUERTO'),
+    neto: buscar('TIEMPONETO'),
+    superNeto: buscar('SUPERNETO'),
+    totalTiempo: buscar('TIEMPOTOTAL'),
+    // soportes va al final (ya calculado arriba para el guard de soporte)
+    soportes: soportesCol,
   }
 }
 
@@ -174,8 +191,22 @@ export function mapPicking(r: Record<string, unknown>, mapping: PickingMapping |
     zona: str(src('zona')),
     ubicacion: str(src('ubicacion')),
     nivel: str(src('nivel')),
-    minutos: num(src('minutos')),
+    // evento: MINUTOS (duracion de la operacion); resumen: Tiempo Total (horas) -> minutos
+    minutos: num(src('minutos')) ?? horasAMin(src('totalTiempo')),
+    // ---- grano resumen (E-8 "Colaborador"): tiempos en HORAS se pasan a minutos
+    turno: str(src('turno')),
+    soportes: num(src('soportes')) == null ? null : Math.round(num(src('soportes')) as number),
+    lineas: num(src('lineas')) == null ? null : Math.round(num(src('lineas')) as number),
+    muertoMin: horasAMin(src('muerto')),
+    netoMin: horasAMin(src('neto')),
+    superNetoMin: horasAMin(src('superNeto')),
   }
+}
+
+// horas ("Tiempo Total" del resumen) -> minutos; null si no hay valor
+function horasAMin(v: unknown): number | null {
+  const n = num(v)
+  return n == null ? null : +(n * 60).toFixed(2)
 }
 
 export interface PickingMapping {
@@ -191,6 +222,14 @@ export interface PickingMapping {
   ubicacion?: string
   nivel?: string
   minutos?: string
+  // grano resumen (E-8 Colaborador)
+  turno?: string
+  soportes?: string
+  lineas?: string
+  muerto?: string
+  neto?: string
+  superNeto?: string
+  totalTiempo?: string
 }
 
 // ============ INGESTA ============

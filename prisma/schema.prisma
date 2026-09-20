@@ -196,6 +196,12 @@ model PickingEvento {
   ubicacion String? // ALLSTS: pasillo/ubicacion
   nivel     String? // NIVSTS: nivel
   minutos   Float? // MINUTOS: duracion de la operacion
+  turno     String? // solo grano resumen (TURNO del E-8 Colaborador)
+  soportes  Int? // grano resumen: cantidad de soportes
+  lineas    Int? // grano resumen: cantidad de lineas
+  muertoMin Float? // grano resumen: tiempo muerto (min) del bloque
+  netoMin   Float? // grano resumen: tiempo neto (min)
+  superNetoMin Float? // grano resumen: tiempo super neto (min)
   raw       String?
   @@index([fecha, operario])
   @@index([batch])

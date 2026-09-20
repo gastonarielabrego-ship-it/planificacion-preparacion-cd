@@ -84,14 +84,26 @@ def detectar_tipo(nombre_archivo: str):
         return "maq"
     if "h61" in n:
         return "h61"
-    # picking = reporte E-8 (producción por picking)
-    if "picking" in n or "piking" in n or "pickeo" in n or re.search(r"\be-?8\b", n):
+    # picking = reporte E-8: log de picking o resumen por colaborador (Tiempos E-8 /
+    # Productividad X Circuito, el que alimenta el modulo Picking)
+    if ("picking" in n or "piking" in n or "pickeo" in n
+            or re.search(r"\be-?8\b", n)
+            or ("productividad" in n and "circuito" in n)):
         return "picking"
     if "muerto" in n or re.search(r"\btm\b", n):
         return "tm"
     if "ola" in n or "pendiente" in n:
         return "ola"
     return None
+
+
+def es_grano_resumen(df: pd.DataFrame) -> bool:
+    """True si el archivo es el resumen por colaborador del E-8 (Tiempos E-8):
+    trae 'Tiempo Muerto'/'Tiempo Total' y NO trae columna de hora evento."""
+    cols = {str(c).strip().upper().replace(" ", "").replace("_", "") for c in df.columns}
+    con_tiempos = ("TIEMPOMUERTO" in cols) and ("TIEMPOTOTAL" in cols)
+    con_hora = any(c in cols for c in ("HORA", "TIMESTAMP"))
+    return con_tiempos and not con_hora
 
 
 def detectar_columnas(df: pd.DataFrame) -> dict:
@@ -296,18 +308,24 @@ def cargar(tipo: str, ruta: str, base: str, lote: int, auto: bool, reemplazar: b
         df.columns = [str(c).strip() for c in df.columns]
         print(f"   {len(df):,} filas x {len(df.columns)} columnas")
         if tipo == "picking":
-            mapping = detectar_columnas(df)
-            print(f"   Mapeo auto-detectado: {json.dumps(mapping, ensure_ascii=False)}")
-            if not mapping.get("soporte"):
-                print("   [aviso] el archivo no trae columna de soporte/pallet:")
-                print("           los gaps entre pickings se calculan igual, pero las")
-                print("           metricas 'tiempo entre soportes' quedaran vacias.")
-            faltan = [k for k in ("fecha", "operario", "horaMin") if not mapping.get(k)]
-            if faltan:
-                print(f"\n   AVISO: no se detectaron columnas para: {faltan}.")
-                print("   Editá MAPEO_PICKING al inicio de este script con los nombres exactos.\n")
-                if not pedir_confirmacion("   ¿Continuar de todas formas? (s/n): ", auto):
-                    return False
+            if es_grano_resumen(df):
+                # resumen por colaborador (Tiempos E-8): la app auto-detecta todas las
+                # columnas server-side (TURNO, Columna1, Sector, Tipo, Tiempo Total/Muerto/Neto/Super Neto)
+                mapping = None
+                print("   Grano RESUMEN detectado (E-8 por colaborador): la app mapea las columnas sola.")
+            else:
+                mapping = detectar_columnas(df)
+                print(f"   Mapeo auto-detectado: {json.dumps(mapping, ensure_ascii=False)}")
+                if not mapping.get("soporte"):
+                    print("   [aviso] el archivo no trae columna de soporte/pallet:")
+                    print("           los gaps entre pickings se calculan igual, pero las")
+                    print("           metricas 'tiempo entre soportes' quedaran vacias.")
+                faltan = [k for k in ("fecha", "operario", "horaMin") if not mapping.get(k)]
+                if faltan:
+                    print(f"\n   AVISO: no se detectaron columnas para: {faltan}.")
+                    print("   Editá MAPEO_PICKING al inicio de este script con los nombres exactos.\n")
+                    if not pedir_confirmacion("   ¿Continuar de todas formas? (s/n): ", auto):
+                        return False
         else:
             mapping = None
         rows = df.to_dict(orient="records")

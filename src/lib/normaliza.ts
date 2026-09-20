@@ -77,11 +77,9 @@ export interface Clasificacion {
 }
 
 export const CATEGORIAS = [
-  'ESPERA UBICACION',
-  'APRO',
+  'ESPERA PICKING',
   'NAVE',
   'PASILLO',
-  'ESPERA PICKING',
   'SOPORTE',
   'SIN MERCADERIA',
   'EQUIPOS Y VEHICULOS',
@@ -96,7 +94,13 @@ export const CATEGORIAS = [
 ] as const
 
 // Clasifica una observacion de tiempo muerto en una categoria estandar.
-// Prioridad: ubicacion puntual > zonas (APRO/NAVE/PASILLO) > causas operativas.
+// Prioridad: ubicacion puntual > zonas (NAVE/PASILLO) > causas operativas.
+//
+// NOTA (unificacion): "espera de ubicacion", "espera de piking" y "apro" son EL
+// MISMO fenomeno para el negocio (el picker espera porque la ubicacion no esta
+// lista / falta reposicion). Todo unifica en ESPERA PICKING. Las filas con
+// ubicacion puntual (E-11-124) conservan nave/pasillo/posicion para el detalle
+// por nave y pasillo.
 export function clasificarMotivo(
   observacion: string | null | undefined,
   motivoCode: number | null,
@@ -107,11 +111,11 @@ export function clasificarMotivo(
 
   const sinUb: Clasificacion = { categoria: '', detalle: t || null, nave: null, pasillo: null, posicion: null }
 
-  // 1) Ubicacion puntual nave-pasillo-posicion (el foco del usuario)
+  // 1) Ubicacion puntual nave-pasillo-posicion: espera de piking CON ubicacion
   const ub = parseUbicacion(t)
   if (ub) {
     return {
-      categoria: 'ESPERA UBICACION',
+      categoria: 'ESPERA PICKING',
       detalle: t,
       nave: ub.nave,
       pasillo: ub.pasillo,
@@ -119,8 +123,8 @@ export function clasificarMotivo(
     }
   }
 
-  // 2) Zonas deinteres explicitas
-  if (t.includes('APRO')) return { ...sinUb, categoria: 'APRO' }
+  // 2) Zonas deinteres explicitas (apro = espera por reposicion/aprontamiento)
+  if (t.includes('APRO')) return { ...sinUb, categoria: 'ESPERA PICKING' }
   if (t.includes('NAVE')) return { ...sinUb, categoria: 'NAVE' }
   if (t.includes('PASILLO')) return { ...sinUb, categoria: 'PASILLO' }
 
@@ -189,6 +193,36 @@ export function clasificarMotivo(
   // 4) Sin texto: usar el codigo de motivo como pista generica
   if (motivoCode === 999) return { categoria: 'SIN DATO', detalle: t || null, nave: null, pasillo: null, posicion: null }
   return { ...sinUb, categoria: 'OTROS' }
+}
+
+// Etiqueta legible para mostrar cada categoria en la UI
+export const ETIQUETAS_CATEGORIA: Record<string, string> = {
+  'ESPERA PICKING': 'Espera de piking',
+  'NAVE': 'Nave (sin ubicación puntual)',
+  'PASILLO': 'Pasillo (sin ubicación puntual)',
+  'SOPORTE': 'Soporte',
+  'SIN MERCADERIA': 'Sin mercadería',
+  'EQUIPOS Y VEHICULOS': 'Equipos y vehículos',
+  'SISTEMAS': 'Sistemas',
+  'PAUSAS Y RRHH': 'Pausas y RRHH',
+  'OTRAS TAREAS': 'Otras tareas',
+  'ORDEN Y LIMPIEZA': 'Orden y limpieza',
+  'REPALETIZADO': 'Repaletizado',
+  'FIN DE TURNO': 'Fin de turno',
+  'SIN DATO': 'Sin dato',
+  'OTROS': 'Otros',
+}
+
+export function etiquetaCategoria(c: string): string {
+  return ETIQUETAS_CATEGORIA[c] ?? c
+}
+
+// Unifica categorias YA GUARDADAS en la base (cargas viejas): "espera de
+// ubicacion" y "apro" pasan a ESPERA PICKING. Se aplica al leer en agg.ts para
+// no tener que recargar los datos historicos.
+export function unificarCategoria(c: string): string {
+  if (c === 'ESPERA UBICACION' || c === 'APRO') return 'ESPERA PICKING'
+  return c
 }
 
 // Etiquetas legibles de los codigos de motivo del sistema (según analisis de datos)

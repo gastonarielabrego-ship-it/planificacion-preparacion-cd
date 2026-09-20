@@ -14,7 +14,7 @@ const PATRONES: Record<TipoCarga, RegExp> = {
   ola: /ola/i,
   h61: /h61/i,
   tm: /(muertos|tm)/i,
-  picking: /(picking|piking|pickeo|e-?8)/i,
+  picking: /(picking|piking|pickeo|e-?8|productividad)/i,
   maq: /(maquinista|clarkista)/i,
 }
 
