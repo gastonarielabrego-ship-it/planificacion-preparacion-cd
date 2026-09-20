@@ -8,6 +8,9 @@ if [ -n "$POSTGRES_PRISMA_URL" ] || { [ -n "$DATABASE_URL" ] && echo "$DATABASE_
   echo "== PostgreSQL (Neon): usando schema.postgres.prisma y creando tablas si faltan =="
   cp prisma/schema.postgres.prisma prisma/schema.prisma
   npx prisma generate
+  # staging descartable fuera del camino antes del push (libera espacio y evita
+  # recreaciones in-place con la base llena; ver scripts/prepush-neon.cjs)
+  node scripts/prepush-neon.cjs || true
   npx prisma db push --accept-data-loss --skip-generate
 else
   echo "== Sin base Postgres configurada: build sin tocar la base =="
