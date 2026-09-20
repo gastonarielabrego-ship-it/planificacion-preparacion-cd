@@ -1,0 +1,310 @@
+     1→     1→# Worklog — Planificación Preparación CD
+     2→     2→
+     3→     3→App: https://planificacion-preparacion-cd.vercel.app
+     4→     4→Repo: github.com/gastonarielabrego-ship-it/planificacion-preparacion-cd
+     5→     5→
+     6→     6→---
+     7→     7→Task ID: 3, 4, 5 (resumen de sesiones previas)
+     8→     8→Agent: Super Z
+     9→     9→Task: Cargador Python simplificado, estructura picking, migración horaMin a Float, limpieza pre-2026.
+    10→    10→
+    11→    11→Work Log:
+    12→    12→- `python/subir_archivo.py` reescrito: auto-detección por nombre (`h61`, `picking/piking`, `muerto/tm`, `ola/pendiente`, `prodcirc`), modo `--carpeta`, `--auto`, `--solo-listar`, lotes de 5.000 con reintentos.
+    13→    13→- `python/CARGAR_ARCHIVOS.bat`: doble clic en Windows, verifica Python/dependencias, carga hacia Vercel con `--auto`.
+    14→    14→- Picking mapeado a estructura real (CODUTI, FECHA, HORA, CODACT, BULTOS) sin columna soporte; `horaMin` Float con precisión de segundos; migrado sandbox + Neon.
+    15→    15→- Purga de datos pre-2026 en sandbox y Neon (ola 212, h61 38.710, tm 11.889, picking 0).
+    16→    16→- Commits 9a6072d, c0c4d74; pushes con deploy Vercel automático.
+    17→    17→
+    18→    18→Stage Summary:
+    19→    19→- Base 100% en 2026; picking aún en 0 registros; métricas "entre soportes" descartadas (confirmado por usuario).
+    20→    20→- Pendiente: integrar "Tiempos E-8" (jul/ago/sep), picking 2026 real, rotar tokens.
+    21→    21→
+    22→    22→---
+    23→    23→Task ID: 6
+    24→    24→Agent: Super Z
+    25→    25→Task: Nueva pestaña "Ola" — análisis exclusivo de la ola y pendientes (rediseño del tablero, parte 1).
+    26→    26→
+    27→    27→Work Log:
+    28→    28→- Inspección de datos (`scripts/inspect_ola.py`): domingos ola=0 siempre; sábados ola=0 salvo excepciones; pendiente presente casi todos los días.
+    29→    29→- `src/lib/agg.ts`: nueva función `getOla()` — serie diaria con `diaSemana`, `esFinde`, `semana` (lunes ISO), ola, pendiente, total. Agregaciones en cliente para consistencia de filtros.
+    30→    30→- `src/app/api/data/route.ts`: caso `ola` agregado.
+    31→    31→- `src/components/dash/ola.tsx` (nuevo): 4 KPIs (Ola recibida total, Pendientes, Promedio y Mediana diaria sobre días con ola); ToggleGroup Mensual/Semanal/Diario + Select de mes; alerta explicativa "sáb y dom no cae ola"; gráfico principal apilado (ola verde + pendiente ámbar) con ReferenceLines promedio/mediana en vista diaria; gráfico de comportamiento por día de semana (Lun→Dom); tabla de detalle por granularidad con findes resaltados. Vista diaria auto-selecciona el último mes; texto de Alert envuelto en `<p>` para evitar salto por grid.
+    32→    32→- `src/app/page.tsx`: pestaña "Ola" (icono Waves) tras Resumen.
+    33→    33→- Verificado con agent-browser: mensual/semanal/diario, filtro Mayo 2026 (anomalía: pendiente 3,5M > ola 3,1M), Ago 2026 diario con referencia, tabla, móvil 390px. Lint OK.
+    34→    34→- Hallazgo de datos: en 2026 real hay 11 días finde con ola (ej. sáb 15/08/2026 con ola 184.035 porque lun 17/08 es feriado). El tablero refleja la realidad, no oculta excepciones.
+    35→    35→- Commit 44446c3 + push a main; Vercel deploy verificado (`/api/data?modulo=ola` → 200, 212 días 2026).
+    36→    36→
+    37→    37→Stage Summary:
+    38→    38→- Pestaña Ola en producción: KPIs promedio/mediana, granularidad mensual/semanal/diario, comportamiento por día de semana.
+    39→    39→- Sandbox cargado con archivo completo de prueba "Ola y Pendiente (1).xlsx" (974 días 2023-2026); producción solo 2026.
+    40→    40→- Siguiente paso sugerido por usuario: continuar rediseño con las demás pestañas; pendiente "Tiempos E-8" jul/ago/sep y picking 2026.
+    41→    41→
+    42→    42→---
+    43→    43→Task ID: 7
+    44→    44→Agent: Super Z
+    45→    45→Task: Nueva pestaña "Capacidad H61" — ritmo de preparación mensual, jornada vs horas extra, colaboradores por hora.
+    46→    46→
+    47→    47→Work Log:
+    48→    48→- Inspección del archivo H61 crudo (`scripts/inspect_h61_raw.py`): columnas HORA_00..23 por operario×circuito, operarios con extras cruzan turnos (ej. P11718 hizo M+T=12h), turno noche usa horas 0-5+23 (cruza medianoche).
+    49→    49→- Corrección en ingest: `ordenarHorasActivas()` ordena cronológicamente las horas del turno noche (tarde→madrugada) para asignar los bultos extra al final real del turno (antes tomaba las últimas por índice absoluto, mal para N).
+    50→    50→- Nuevo modelo `H61OpHora` (fecha, operario, turno, hora, bultos, esExtra) en ambos schemas; vercel-build.sh lo migra solo en Neon. Sandbox con `prisma db push` + regeneración de cliente + reinicio de dev server.
+    51→    51→- ingestH61 persiste el detalle operario×hora (primeras 8 horas activas = jornada, resto = extras); clearTipo('h61') lo borra también.
+    52→    52→- `getCapacidad()` en agg.ts: serie diaria (ritmo = bultos/hora-hombre), porMes (días, actividades=op-días, personas, personasExtras, bultosBase/bultosExtras/pctExtras, horasExtras, ritmoProm ponderado, ritmoMediana de días), perfilHora (promedio de personas por hora jornada vs extras + bultos promedio), resumen del período. Helper `mediana()` server-side.
+    53→    53→- API: caso `capacidad`. Componente `capacidad.tsx`: 4 KPIs (sin extras +%, en extras +%, ritmo con mediana, personas), alerta de la regla de 8h, gráfico mensual apilado con línea % extras (eje derecho), gráfico de colaboradores por hora (barras apiladas jornada/extras + línea bultos; mensaje si falta re-cargar H61), tabla mensual completa y detalle diario al filtrar mes.
+    54→    54→- Verificado en sandbox con agent-browser (KPIs, ambos gráficos, tablas, filtro de mes con detalle diario). Lint OK. Commit 1aac1ac + push; Vercel OK.
+    55→    55→- Producción: 245 días, 38.710 op-días, 478 personas, 6,9% de bultos en extras, ritmo 85,6 bultos/h. `tieneOpHora=false`: falta re-cargar H61 real para el gráfico por hora.
+    56→    56→
+    57→    57→Stage Summary:
+    58→    58→- Pestaña Capacidad H61 en producción funcionando con datos existentes (todo menos el gráfico por hora).
+    59→    59→- PENDIENTE USUARIO: re-cargar el archivo H61 (doble clic en CARGAR_ARCHIVOS.bat) para activar el gráfico "colaboradores por hora jornada vs extras" con el detalle exacto operario×hora.
+    60→    60→- La columna ACTIVIDAD (códigos 2/3/4) existe en el archivo crudo pero no se persiste; "actividades" se interpretó como operario-días. Confirmar con el usuario si lo quiere por código de actividad.
+    61→    61→
+    62→    62→---
+    63→    63→Task ID: 8
+    64→    64→Agent: Super Z
+    65→    65→Task: Precisión de extras por ventana de turno (TM 6-14, TT 14-22, TN 23-06) según definición operativa del usuario.
+    66→    66→
+    67→    67→Work Log:
+    68→    68→- Usuario definió: TM 6 a 14 (extras hasta 18), TT 14 a 22 (extras pueden empezar a las 10), TN 23 a 06 (extras desde las 18 o hasta las 10). Jornada del TN (23:00 del día D + 00-06 del D+1) se agrupa como día D.
+    69→    69→- Verificación con datos reales (`scripts/inspect_turnos.py`): jornadas completas M=buckets 6-13, T=14-21, N=23+0-5 (7h). Confirmado contra el crudo (scripts/inspect_h61_raw.py): operarios TT con bloque previo 10-13 etiquetado M (ej. P12924) -> el TURNO de la primera fila engaña.
+    70→    70→- `ventanaTurno()`: jornada base por turno; toda hora activa fuera de la ventana = extra (antes o después).
+    71→    71→- `turnoDominante()`: turno propio del operario-día = bloque con más horas activas (corrige P12924: dominante T, extras 10-13 ✔).
+    72→    72→- `horasExtrasDe()`: extras por ventana; fallback a primeras-8h si turno desconocido. H61OpDia.turno ahora guarda el turno dominante.
+    73→    73→- Sandbox re-cargado: extras 11,6% (antes 10,4% con regla genérica; 19,5% con primera versión sin turno dominante). Perfil horario coherente: extras de TT en 10-13 (~12 pers), TM en 14-17, TN en 18-22 y 6-9.
+    74→    74→- `getCapacidad()` agregó `porTurno` (op-días, personas, c/extras, bultos base/extras, %, horas extra, ritmo); tabla "Preparación por turno" en capacidad.tsx + textos de reglas actualizados.
+    75→    75→- Commit 1de7535 + push; Vercel deployado y verificado (porTurno presente en producción).
+    76→    76→- Producción con datos viejos: extras 6,9%, ritmo 85,6 (mediana 83,4); por turno M 11,7% / N 4% / T 0,5% — recalculan al re-cargar H61. tieneOpHora=false.
+    77→    77→
+    78→    78→Stage Summary:
+    79→    79→- Clasificación de extras por ventana de turno implementada y desplegada.
+    80→    80→- PENDIENTE USUARIO: re-cargar archivo H61 real (CARGAR_ARCHIVOS.bat) — una sola re-carga activa: gráfico colaboradores por hora (jornada vs extras), extras por ventana de turno y turno dominante en todas las pestañas.
+    81→    81→
+    82→    82→---
+    83→    83→Task ID: 9
+    84→    84→Agent: Super Z
+    85→    85→Task: Feriados de Argentina en Capacidad H61 (todo feriado = horas extra, medición aparte) + corrección del error "Unexpected token '<'" en la carga web.
+    86→    86→
+    87→    87→Work Log:
+    88→    88→- Diagnóstico del error `Unexpected token '<', "<!DOCTYPE "...`: el componente cargadatos.tsx hacía POST a `/api/upload`, ruta que NO existía → Next.js devolvía la página 404 HTML y `res.json()` explotaba. Corregido creando la ruta y endureciendo el parseo (`r.json().catch()` + mensaje con código HTTP).
+    89→    89→- Nueva ruta `src/app/api/upload/route.ts`: carga web por FormData (tipo + file) para ola/h61/tm/picking/prodcirc. Reutiliza `workbookARecords` + `ingestRows`. Probada en sandbox con "tiempos muertos 2026.xlsx": 11.889 filas OK.
+    90→    90→- Nuevo modelo `Feriado` (fecha unique, nombre, tipo) en ambos schemas (SQLite + Postgres); `vercel-build.sh` crea la tabla en Neon automáticamente. `prisma db push` en sandbox.
+    91→    91→- `src/lib/feriados.ts`: sincronización desde la API pública `api.argentinadatos.com.ar/v1/feriados/{anio}` (sin clave) + lista fallback 2026 embebida (el sandbox no tiene salida a internet; Vercel sí). Cache en memoria 6h, guard de concurrencia, upsert idempotente por fecha.
+    92→    92→- Nueva ruta `/api/feriados`: GET lista/sincroniza años presentes en datos (H61+Ola), POST con `{anio}` re-sincroniza forzando la API.
+    93→    93→- `getCapacidad()` (agg.ts): marca cada día con `esFeriado`; en feriado TODO el tiempo y bultos cuentan como extras (base=0, horasExtras=horasActivas, todos los operarios "c/ extras"); los feriados se EXCLUYEN de porMes (días/personas/ritmo prom/mediana), porTurno, perfilHora y resumen de la medición normal; se acumulan aparte (bultosFeriado/diasFeriado/horasFeriado/personasFeriado) y el `pctExtrasTotal` los incluye como extras. Nuevo bloque `feriados[]` con detalle por feriado (personas, op-días, bultos, horas, ritmo).
+    94→    94→- `capacidad.tsx`: alerta ampliada con la regla de feriados; nueva tarjeta "Producción en feriados (medición aparte)" con 4 mini-KPIs + tabla por feriado (badge tipo); gráfico mensual con tercer segmento rojo "En feriados (todo es extra)" y línea "% en extras (incl. feriados)"; tabla mensual con columnas Feriados y Bultos feriado; detalle diario con badge "feriado" y fila roja; descripciones de turno/perfil-hora aclaran que feriados van aparte. SinDatos ahora considera bultos feriados.
+    95→    95→- Verificado en sandbox con agent-browser (KPIs, tarjeta feriados con Año Nuevo 100% extras, gráfico, filtro Ene 2026 con fila feriada). Lint OK. Commit 60f811d + push; Vercel READY.
+    96→    96→- Producción verificada: `/api/feriados?sync=1` → 18 feriados 2026; capacidad real → medición normal 234 días / 476 personas / %extras 6,7%; feriados 11 días / 380 personas / 951.026 bultos / 11.188 h → %extras total 10,3%. UI en producción correcta.
+    97→    97→
+    98→    98→Stage Summary:
+    99→    99→- Regla de feriados implementada y desplegada: calendario argentino sincronizado automáticamente (API pública + fallback), todo feriado = 100% extras, esos días salen de la medición normal y se informan aparte con su propio ritmo y detalle.
+   100→   100→- Carga web reparada: la pestaña Carga de Datos vuelve a funcionar para archivos chicos/medianos (grandes siguen por script Python).
+   101→   101→- PENDIENTE USUARIO: re-cargar el archivo H61 real (activa gráfico por hora + recálculo de extras por ventana; los feriados ya quedan cubiertos).
+   102→   102→- La lista 2026 coincide con el calendario oficial (Ley 27.399 + puentes); si el calendario cambia, POST /api/feriados re-sincroniza.
+   103→   103→
+   104→   104→---
+   105→   105→Task ID: 10
+   106→   106→Agent: Super Z
+   107→   107→Task: Regla TN en feriados — la jornada que ANTECEDE al feriado es la feriada (aclaración del usuario).
+   108→   108→
+   109→   109→Work Log:
+   110→   110→- Usuario aclaró: si el feriado es el 17/08, los bultos de la noche previa quedan registrados con fecha 16/08 (TN 23:00→06:00) y son producción del feriado; los diurnos corresponden al 17/08.
+   111→   111→- Inspección sandbox (scripts/inspect_feriados_tn.py): Año Nuevo tenía 28 op-días TN (7.775 bultos) contando como feriado → con la regla nueva pasan a medición normal (es la noche hacia el 02/01, día normal).
+   112→   112→- agg.ts (getCapacidad): clasificación feriado ahora POR OP-DÍA con feriadoRefDe() — turno N → feriado si (fecha+1) es feriado; M/T → feriado si fecha lo es. Serie diaria con parte normal y feriada separadas (bultosNormales/bultosFeriado, horasNormales/horasFeriado, opsFeriado, opDiasNormales/Feriado, feriadoManana); porMes acumula la producción feriada en el MES DEL FERIADO (noche TN previa incluida, ej. TN 30/04 → feriado 01/05 cuenta como mayo); porTurno y perfilHora (H61OpHora tiene turno) excluyen op-días feriados con la misma regla; feriadosDetalle se arma por feriado (ferAgg) reuniendo la jornada completa: diurnos del feriado + TN del día previo; resumen.diasFeriado = feriados con actividad; guard de año+1 para TN de diciembre.
+   113→   113→- capacidad.tsx: alerta con la regla TN explicada; tarjeta feriados con leyenda "jornada completa" y KPI renombrado "Feriados con actividad"; detalle diario con columna "En feriado" + badge "noche TN" en vísperas; textos de porTurno/perfilHora/gráfico mensual actualizados.
+   114→   114→- Lint OK; verificado en sandbox (01/01 pasó a normal con badge informativo) y en producción con agent-browser: 08/07 muestra badge "noche TN" con 21.707 bultos en feriado y 09/07 feriado con 108.603 diurnos + 25.683 normal (TN hacia el 10/07). Sin errores de consola.
+   115→   115→- Commit 8a5a92a + push; Vercel READY.
+   116→   116→
+   117→   117→Stage Summary:
+   118→   118→- Producción recalculada: feriados con actividad 11 → 8; bultos feriado 951.026 → 816.031 (3,2% del total); personas feriado 380 → 327; horas 11.188 → 9.367; %extras total 10,3% → 9,7%; medición normal 234 → 243 días (suman los TN de las noches feriadas hacia días normales).
+   119→   119→- Cada feriado en la tabla reúne su jornada completa (ej. Independencia: TN del 08/07 + diurnos del 09/07 = 130.310).
+   120→   120→- Pendientes vigentes: re-cargar H61 real (gráfico por hora), Tiempos E-8, picking 2026, rotar tokens al cerrar el proyecto.
+   121→   121→
+   122→   122→---
+   123→   123→Task ID: 11
+   124→   124→Agent: Super Z
+   125→   125→Task: Comparativa feriado vs día normal en Capacidad H61 — producción, días pico/decaimiento y productividad por hora.
+   126→   126→
+   127→   127→Work Log:
+   128→   128→- Usuario pidió confrontar feriados contra un día normal: cómo es la producción, qué días se produce más / cuáles decaen, y la productividad de cada hora en días normales y feriados.
+   129→   129→- agg.ts (getCapacidad): agrega fetch de H61TurnoHora y nuevo bloque `comparativa`: promedios por jornada (bultos, personas, horas-hombre, ritmo) de días normales vs jornadas feriadas completas (reusa feriadosDetalle: diurnos del feriado + noche TN previa), deltas %, perfil horario por tipo de día (24 horas: bultos promedio, personas promedio y ritmo bultos/persona, clasificando cada registro por su propio turno con la regla TN -> fecha siguiente; en días normales las horas 0-5 del TN se asignan al día calendario siguiente), y contadores de días usados en el perfil.
+   130→   130→- capacidad.tsx: nueva tarjeta "Feriado vs día normal: ¿cómo se compara la producción?" con 4 cajas comparativas (CajaComparativa: día normal vs feriado + badge delta %), gráfico "Productividad de cada hora" (barras verdes normales vs rojas feriado + líneas de ritmo por hora, eje derecho; series feriado ocultas si no hay jornadas feriadas) y rankings lado a lado "Los días que más se producen" / "Los días que decaen" (top/bottom 8 por bultos desde serie, respeta el filtro de mes, badges feriado/noche TN, columna % vs promedio de día normal con color). KPIs y perfil horario siempre usan todo el período (nota en descripción si hay filtro de mes).
+   131→   131→- Lint OK (sin errores nuevos; los pre-existentes de ola/ingest/xlsx no cambian). Commit d400f85 + push; Vercel READY.
+   132→   132→- Verificado en sandbox (sin feriados activos: muestra ceros y oculta series feriado) y en producción con agent-browser: tarjetas, gráfico con tooltip, rankings con badges. Sin errores de consola.
+   133→   133→
+   134→   134→Stage Summary:
+   135→   135→- Hallazgo en producción (2026): un feriado típico produce 102.004 bultos con 127,6 personas y ritmo 87,1 bultos/h vs 100.223 bultos, 155,1 personas y 85,6 bultos/h de un día normal → misma producción (+1,8%) con 17,7% menos gente; ritmo por hora igual o superior (noche feriada 117-126 bultos/pers vs 98-104 normal). Horas-hombre por jornada idénticas (1.171 h).
+   136→   136→- Días pico: fines de mes (30/06 +68%, 01/09 +65%, 24/06 +63%); días que decaen: domingos con dotación mínima (19/07 -97%, 22/08 -95%) y feriados sin operación (01/01).
+   137→   137→- Pendientes vigentes: re-cargar H61 real (gráfico operario×hora), Tiempos E-8, picking 2026, rotar tokens al cerrar el proyecto.
+   138→   138→
+   139→   139→---
+   140→   140→Task ID: 12
+   141→   141→Agent: Super Z
+   142→   142→Task: Ritmo por día de semana (lun-vie), sábados con dotación acotada (extras TT) y bultos por actividad (2/3/4/jaula).
+   143→   143→
+   144→   144→Work Log:
+   145→   145→- Usuario aclaró que quería (en lugar del ranking de días): ritmo de preparación lunes a viernes, sábados en análisis aparte (cada ~15 días la dotación cae porque cubre personal que viene del turno tarde como extras) y desagregado de bultos por actividad (columna ACTIVIDAD del crudo: 2, 3, 4, jaula).
+   146→   146→- Schema (SQLite + Postgres): nuevo modelo H61Actividad (fecha, actividad, bultos, operarios, horas; unique fecha+actividad). vercel-build.sh lo crea en Neon automáticamente.
+   147→   147→- ingest.ts: parsea ACTIVIDAD (upper) y agrega por fecha×actividad: bultos, operarios distintos y horas-hombre (horas activas distintas por operario para no duplicar si comparte hora entre circuitos). clearTipo('h61') borra también H61Actividad.
+   148→   148→- agg.ts (getCapacidad): porDiaSemana (Lun..Dom: días, bultosProm, personasProm, horasProm, ritmo ponderado, mediana de ritmos, % extras — solo medición normal, excluye jornadas feriadas), sabados (serie completa de cada sábado con dotación, c/extras, bultos, ritmo, badges) + sabadosResumen (mediana de dotación, marca "dotación acotada" por debajo del 65% de la mediana, promedios acotadas vs resto), porActividad + tieneActividad. Quitó el bloque rankings de la comparativa (redirigido por el usuario).
+   149→   149→- capacidad.tsx: reemplazó rankings por 3 tarjetas nuevas tras el gráfico mensual: "Ritmo de preparación por día: lunes a viernes" (barras bultos prom + línea ritmo + tabla Lun..Dom con sábado marcado "análisis aparte"), "Sábados: dotación y ritmo" (barras de dotación verdes/rojas por sábado + línea ritmo + tabla con badges dotación acotada/noche TN/feriado) y "Bultos por actividad (2 · 4 · jaula)" (barras horizontales + tabla; mensaje de re-cargar H61 si aún no se cargó la columna ACTIVIDAD). etiquetaActividad: 2 -> "Actividad 2", JAULA -> "Jaula".
+   150→   150→- Sandbox: prisma db push + re-carga de H61 TEST.xlsx vía /api/upload → H61Actividad poblada (2: 50,9%, 4: 48%, 3: 1,1%). Verificado con agent-browser (3 tarjetas OK). Lint OK (solo errores pre-existentes).
+   151→   151→- Commit 9292563 + push; Vercel READY y verificado con agent-browser (patrón quincenal visible en el gráfico de sábados). Sin errores de consola.
+   152→   152→
+   153→   153→Stage Summary:
+   154→   154→- Producción 2026: ritmo lun-mié ~89-90 bultos/h, jue 83,6, vie 78,1 (decae hacia el fin de semana); sábado 83,6 con dotación 56,5 prom; domingo 73,2.
+   155→   155→- Sábados: 26 con actividad; 12 con dotación acotada (promedio 22,1 personas vs 85,9 del resto) — patrón quincenal confirmado por los datos (mediana 61).
+   156→   156→- Actividad en producción requiere re-cargar el archivo H61 (misma re-carga pendiente habilita también el gráfico operario×hora). La tarjeta muestra el mensaje.
+   157→   157→- Pendientes vigentes: re-carga H61 real, Tiempos E-8, picking 2026, rotar tokens al cerrar.
+   158→   158→
+   159→   159→---
+   160→   160→Task ID: 13
+   161→   161→Agent: Super Z
+   162→   162→Task: Corregir "Error HTTP 413 al procesar el archivo" — la carga web no aceptaba archivos grandes (H61 ~26 MB) por el límite de body de Vercel (~4,5 MB).
+   163→   163→
+   164→   164→Work Log:
+   165→   165→- Diagnóstico: cargadatos.tsx enviaba el archivo completo por FormData a /api/upload; Vercel rechaza bodies > ~4,5 MB con 413. El script Python no tiene el problema (manda rows a /api/batch), pero el usuario necesitaba la vía web (la re-carga del H61 real con columna ACTIVIDAD quedó pendiente desde las Tasks 7-12).
+   166→   166→- Solución: subida por chunks. Nuevo modelo UploadChunk (fileId, idx, data base64, createdAt, unique fileId+idx) en ambos schemas; vercel-build.sh crea la tabla en Neon automáticamente (prisma db push). Sandbox: prisma db push + regeneración de cliente + reinicio de dev server.
+   167→   167→- /api/upload ahora soporta 2 modos: multipart legacy (sin cambios) y JSON { modo:'chunk', tipo, fileId, nombre, i, total, data } — guarda cada parte (upsert), al completarse decodifica, valida tamaño (tope 300 MB), procesa con workbookARecords + ingestRows y borra las partes en finally (también si el parseo falla). Limpieza TTL (6 h) de partes huérfanas al iniciar subida. Validación de tipo/índices/longitud; respuestas intermedias { fase:'chunk', recibidos, total }.
+   168→   168→- BUG CLAVE detectado en el primer test: concatenar los strings base64 de las partes trunca el archivo en 2,00 MB — cada parte de 2 MB no es múltiplo de 3, su base64 termina con padding '=' y el decodificador de Node se detiene en el primer '=' intermedio. Fix: decodificar CADA PARTE por separado y Buffer.concat (diagnóstico en scripts/diag_chunks.js).
+   169→   169→- cargadatos.tsx: subida en partes de 2 MB (aBase64 con bloques de 32 KB), reintentos ×3 con backoff (4xx definitivos no reintentan), progreso en vivo ("Subiendo parte N/M…", "Partes N/M recibidas…", "Procesando en el servidor…"), guard de archivo vacío. Textos actualizados: la web ya acepta archivos grandes; Python queda como alternativa.
+   170→   170→- Tests: (1) API end-to-end con H61 sintético de 10,52 MB (scripts/gen_h61_grande.py: 101.360 filas, 240 días × 140 operarios × 4 circuitos, turnos M/T/N, ACTIVIDAD 2/3/4/JAULA) → 6 partes, 21,8 s de procesado, 25.340 op-días insertados, 0 errores; (2) regresión multipart (tm chico OK), tipo inválido → 400, UploadChunk queda vacía tras procesar; (3) UI real con agent-browser (upload de archivo por input + click Cargar): progreso por partes visible, "OK: 25.340 filas procesadas (2026-01-01 → 2026-08-28)", consola limpia. Nota de testing: agent-browser upload necesita RUTA ABSOLUTA (con ruta relativa el File queda en 0 bytes y el guard del servidor lo rechaza correctamente).
+   171→   171→- Verificado /api/data?modulo=capacidad tras la carga: tieneActividad true (actividad 2: 42,7%, 4: 28,7%, 3 y jaula), porDiaSemana y sabados poblados.
+   172→   172→- Lint OK (sin errores). Commits 911cac2 + a6956d1; Vercel READY. Producción verificada sin tocar datos: tipo inválido → 400, chunk con contenido inválido → 400 "el archivo no tiene filas legibles" (prueba tabla UploadChunk + ensamblado + limpieza), /api/status intacto (h61 38.710, ola 212, tm 11.889).
+   173→   173→
+   174→   174→Stage Summary:
+   175→   175→- La web ahora acepta archivos de cualquier tamaño (por partes de 2 MB): el usuario ya puede re-cargar el H61 real (~26 MB) desde la pestaña Carga de Datos — una sola re-carga activa: bultos por actividad (2/4/jaula, Task 12), gráfico colaboradores por hora, extras por ventana de turno y turno dominante.
+   176→   176→- La vía Python (subir_archivo.py → /api/batch) sigue disponible como alternativa.
+   177→   177→- Pendientes vigentes: que el usuario suba el H61 real en producción, Tiempos E-8, picking 2026, rotar tokens al cerrar.
+   178→   178→
+   179→   179→---
+   180→   180→Task ID: 14
+   181→   181→Agent: Super Z
+   182→   182→Task: Corregir "Error HTTP 500 al procesar el archivo" — OOM de la función serverless al procesar el H61 real (~26 MB).
+   183→   183→
+   184→   184→Work Log:
+   185→   185→- Contexto: tras la subida por chunks (Task 13) el usuario reintentó cargar el H61 real y recibió 500 genérico (respuesta sin JSON = crash de plataforma, no excepción de la ruta).
+   186→   186→- Diagnóstico por medición (los runtime logs de Vercel no están disponibles vía API para esta cuenta): scripts/measure_memoria.cjs con H61 sintético de 23 MB (222.000 filas × 31 cols): pipeline anterior con lectura estándar llegó a RSS 1.909 MB tras XLSX.read y el proceso murió con exit 137 (OOM killer) durante sheet_to_json. El archivo real de 26 MB necesita >2 GB → la función de Vercel (≤1.769 MB) lo voltea → 500.
+   187→   187→- Fix (2 frentes):
+   188→   188→  1) Memoria: vercel.json sube /api/upload a memory 3009 (deploy aceptado → el plan lo soporta).
+   189→   189→  2) Streaming: XLSX.read con dense:true + nuevo generador filasDelWorkbook() en xlsx.ts que emite una fila {encabezado: valor} por vez y libera la fila del sheet al consumirla (GC progresivo); ingestRows() ahora acepta Iterable (todas las ingestas consumían en un solo pase) y cuenta filas con un generador wrapper; el route usa el generador solo para h61 (peek de la primera fila para el guard de "sin filas"), los demás tipos conservan workbookARecords.
+   190→   190→- Particularidad de SheetJS 0.18.5: el formato denso guarda las filas bajo claves numéricas en el sheet (sheet['0'] = array de celdas), NO bajo '!data' (formato de versiones nuevas); filasDelWorkbook soporta ambos con un helper común (filasDeHojaDensa) y fallback sheet_to_json para workbooks no densos.
+   191→   191→- Medición del pipeline nuevo (scripts/measure_streaming.cjs): 23 MB → pico VmHWM 1.361 MB (vs >2 GB), 11 s de lectura + agregación plana. Para 26 MB ≈ 1,5 GB < 3009 MB con margen ~2×.
+   192→   192→- Tests: paridad exacta del streaming contra el path clásico (mismo H61 de 10,5 MB → 25.340 op-días, 0 errores, mismo rango); carga UI real del archivo de 23 MB (12 partes) → "OK: 44.400 filas procesadas (2026-01-01 → 2026-10-27)"; /api/data?modulo=capacidad → tieneActividad true (2: 42,9%, 4: 28,5%, 3: 14,3%, JAULA: 14,2%); consola limpia. Lint OK.
+   193→   193→- Commit d45a71d + push; Vercel READY con memory 3009. Producción verificada sin tocar datos: tipo inválido → 400; chunk con contenido inválido → 400 "el archivo no tiene filas legibles" (prueba dense+streaming+peek); /api/status intacto (h61 38.710, ola 212, tm 11.889).
+   194→   194→- Nota: los intentos fallidos por OOM dejaron partes huérfanas en UploadChunk de Neon (el finally no corre si el proceso muere); la limpieza TTL de 6 h al iniciar subida las elimina; con el OOM corregido la fuga no se repite.
+   195→   195→
+   196→   196→Stage Summary:
+   197→   197→- La carga web del H61 real (~26 MB) ya no colapsa la función: streaming de filas + dense + 3009 MB. El usuario puede reintentar la subida desde Carga de Datos.
+   198→   198→- Lección medible: materializar records de xlsx grandes cuesta ~10× el tamaño del archivo en RAM; dense+streaming lo baja a ~6× (piso del workbook) y el techo queda en la lectura.
+   199→   199→- Pendientes vigentes: re-carga H61 real en producción, Tiempos E-8, picking 2026, rotar tokens al cerrar.
+   200→   200→
+   201→   201→---
+   202→   202→Task ID: 14
+   203→   203→Agent: Super Z
+   204→   204→Task: Pestaña Prod. X Circuito — aclarar fuente E-8 y periodo; módulo Picking completo (mediana gaps, bultos por zona/nave, personas por actividad, recorridos más largos, traslados entre ubicaciones, top colaborador, prod neta/super neta).
+   205→   205→
+   206→   206→Work Log:
+   207→   207→- Schema PickingEvento extendido (nombre, actividad, zona, ubicacion, nivel, minutos) en ambos schemas; db push sandbox. Estructura real WMS confirmada: CODUTI, NOMUTI, FECHA, HORA, CODACT, ZONSTS, ALLSTS, DPLSTS, NIVSTS, CODPRO, PCBPRO, BULTOS, MINUTOS, ALERTA.
+   208→   208→- ingest.ts: PickingMapping extendido + autoMapPicking() server-side (subida web sin configurar) + ingestPicking detecta una vez con la primera fila.
+   209→   209→- agg.ts getPicking reescrito: gaps promedio + mediana real + buckets; traslados (gap al cambiar ubicación) prom/mediana/buckets + pares zona→zona más lentos; bultos/eventos/operarios/días por zona (nave); personas por actividad (CODACT, total y promedio por día); recorridos top por ubicaciones distintas; ranking con prod total/neta/super neta. Modelo: total=span jornada, muerto=Σgaps>2min, neto=total−muerto, superNeto=ΣMINUTOS acotado al neto (sin MINUTOS → neto), traslados=neto−superNeto.
+   210→   210→- getProdCirc: agrega meses (cantidad con datos) + fuentes (uploadBatch tipo prodcirc). prodcirc.tsx: banner "Fuente del análisis: Tiempos E-8" con periodo dinámico y archivos tomados en cuenta.
+   211→   211→- picking.tsx reescrito: 8 KPIs (incl. gap mediano, prod neta/super neta, top colaborador), distribución gaps, bultos por zona, traslados entre ubicaciones, serie diaria con gap line, ranking colaboradores, personas por actividad, pares de zonas lentos, recorridos más largos. Empty state actualizado (subida web por partes).
+   212→   212→- subir_archivo.py: MAPEO_PICKING + detección ampliados (nombre, actividad, zona, ubicacion, nivel, minutos).
+   213→   213→- Dev server reiniciado para recargar cliente Prisma (causa del primer 500 en test: cliente viejo en memoria). Test E2E: picking-test.xlsx (1.200 eventos, estructura real) subido por chunks SIN mapping → auto-detección OK, 0 errores; métricas verificadas por API y UI (agent-browser: KPIs, tablas y gráficos renderizan).
+   214→   214→- Commit 84af3d6 → Vercel READY. Producción: prodcirc expone meses=8 (ene→ago 2026) y fuentes; picking en 0 registros esperando el archivo.
+   215→   215→
+   216→   216→Stage Summary:
+   217→   217→- Al subir el picking (nombre que contenga "picking") el módulo se activa solo con las métricas pedidas; no requiere mapeo manual.
+   218→   218→- Banner E-8 aclara dinámicamente qué archivos y meses toma: hoy 8 meses con datos (ene–ago 2026) de "Productividad X Circuito (1).xlsx" (42.293 + 2.420 filas); el usuario creía 3 meses — aclarado en la UI con archivos reales.
+   219→   219→- Pendiente: usuario sube picking real; confirmar semántica ZONSTS/ALLSTS (naves/pasillos) con valores reales; rotar tokens al cerrar.
+   220→   220→
+   221→   221→---
+   222→   222→Task ID: 15
+   223→   223→Agent: Super Z
+   224→   224→Task: Eliminar el apartado "Productividad por circuito" (no aporta al análisis) y dejar el módulo Picking (E-8) en su lugar.
+   225→   225→
+   226→   226→Work Log:
+   227→   227→- Usuario aclaró que el módulo de picking ES el reporte E-8; pidió eliminar "Prod. X Circuito" y reemplazarlo por el módulo Picking creado a partir del E-8.
+   228→   228→- page.tsx: pestaña "Prod. X Circuito" eliminada; "Picking" renombrada "Picking (E-8)" y movida a su posición (tras Productividad H61). Import Factory removido.
+   229→   229→- picking.tsx: banner "Fuente del análisis: reporte E-8 (producción por picking)" con período, cantidad de meses y archivos tomados en cuenta (nuevos campos meses/fuentes en getPicking). Empty state aclarando que toma el reporte E-8.
+   230→   230→- agg.ts: getProdCirc eliminado por completo; getStatus sin prodcirc; getPicking agrega meses (meses distintos con datos) y fuentes (uploadBatch tipo picking); helpers r1/r2 conservados (los usa picking).
+   231→   231→- ingest.ts: TipoCarga ya no incluye 'prodcirc'; mapProdCirc/ingestProdCirc eliminados; clearTipo y dispatch actualizados.
+   232→   232→- API routes: data (case prodcirc fuera), upload (TIPOS), batch (validación y rama incremental solo picking), seed (patrón picking ahora /(picking|piking|pickeo|e-?8)/i).
+   233→   233→- Schemas (SQLite + Postgres): model ProdCircuito eliminado; prisma db push dropea la tabla en sandbox y en Neon al deployar (44.713 filas fuera; recuperables re-subiendo el Excel si algún día se necesita).
+   234→   234→- cargadatos.tsx: tarjeta prodcirc eliminada; tarjeta de picking renombrada "Picking (E-8)" con descripción del E-8.
+   235→   235→- subir_archivo.py: detectar_tipo ya no devuelve prodcirc; nombres con "E-8"/"E8" van a PICKING; leer_prodcirc eliminado; --tipo sin prodcirc; --reemplazar marcado deprecado.
+   236→   236→- Tests: tsc sin errores en archivos tocados (pre-existentes de ola/xlsx/skills intactos); eslint limpio; python ast OK. E2E sandbox (scripts/test_picking_e8.py): archivo real "produccion picking 2026.xlsx" por chunks -> 8 filas; /api/data?modulo=picking con fuentes+meses; modulo=prodcirc -> 400. UI sandbox y producción verificadas con agent-browser (banner, KPIs, tarjetas de carga, sin errores de consola).
+   237→   237→- Commit 59ec95d; Vercel READY (dpl_AjDpQyWAYjMiYX7M4FRGkLVKH9Md). Producción: /api/status {ola 212, h61 38710, tm 11889, picking 0} sin prodcirc; prodcirc 400; pestañas correctas.
+   238→   238→
+   239→   239→Stage Summary:
+   240→   240→- El dashboard quedó: Resumen · Ola · Capacidad H61 · Planificación · Productividad H61 · Picking (E-8) · Tiempos muertos · Carga de Datos.
+   241→   241→- En producción el módulo Picking (E-8) espera el archivo real (0 filas): al subirlo por la web (nombre con picking/piking/pickeo/E-8) se activan las 7 métricas pedidas con el banner de fuente.
+   242→   242→- Pendientes vigentes: usuario sube picking real; confirmar semántica ZONSTS/ALLSTS con datos reales; rotar tokens al cerrar.
+   243→   243→
+   244→   244→---
+   245→   245→Task ID: 16
+   246→   246→Agent: Super Z
+   247→   247→Task: Nuevo módulo "Maquinistas" (H61 de clarkistas) — personas por actividad y naves asignadas.
+   248→   248→
+   249→   249→Work Log:
+   250→   250→- Usuario compartió "h61 maquinista.xlsx": 90.651 filas, 100 operarios, 248 días (01/01→17/09/2026), grano operario×fecha×turno×ACTIVIDAD(2/3/4)×CIRCUITO(nave, 33 valores, XXX=21% "varios", 207 sin dato). TOTAL=Σhoras (684.043 movimientos), TOT_BULTOS (65.117.500). Misma combinación puede repetirse en varias filas (bloques).
+   251→   251→- Schemas (SQLite+Postgres): 3 modelos nuevos — MaqOpNave (fecha, turno, operario, nombre, actividad, nave, total, bultos, horas; unique fecha+turno+operario+actividad+nave), MaqAct y MaqNave (pre-agg fecha×clave con operarios y horas únicas por operario, estilo H61Actividad). vercel-build.sh los crea en Neon (db push) — verificado en deploy.
+   252→   252→- ingest.ts: TipoCarga 'maq'; mapMaq (lee NOIMBRE typo incl., TOT_BULTOS, HORA_00..23) + ingestMaq que fusiona filas de la misma clave (suma total/bultos, horas = unión de horas activas) y popula las 3 tablas; clearTipo borra las tres.
+   253→   253→- agg.ts getMaquinistas: KPIs (operarios, personasPromDia = Σ distintos por día/días, horasHombre exactas por dedup, navesActivas, naves por persona/día), porActividad, porNave (etiquetas: XXX→"Varias (XXX)", ?→"Sin nave"), matriz actividad×nave, porTurno (M/T/N con desglose por actividad), porMesActividad, porMesNave (top 8 naves), fuentes. getStatus agrega maq.
+   254→   254→- APIs: data case 'maq'; upload TIPOS + streaming generador para maq (como h61); batch/reset validan maq (reemplazar=true único lote); seed patrón /(maquinista|clarkista)/i.
+   255→   255→- UI: dash/maquinistas.tsx nuevo — banner fuente (período, meses, archivo), 8 KPIs, personas por actividad (barras coloreadas + tabla con % dotación), personas por nave (barras horizontales top 12 con interval={0} para no ocultar ticks + nota XXX), matriz actividad×nave (top 15), evolución mensual apilada, distribución por turno con badges por actividad, detalle completo por nave, nota de lectura. Pestaña "Maquinistas" (icono Forklift) tras Productividad H61. Tarjeta MAQ en Carga de Datos.
+   256→   256→- python/subir_archivo.py: detectar_tipo devuelve 'maq' para maquinista/clarkista ANTES que h61 (el archivo se llama "h61 maquinista.xlsx"); --tipo incluye maq.
+   257→   257→- Tests: E2E sandbox con el archivo real por chunks (9 partes, 16,75 MB) → 76.537 combinaciones insertadas, 0 errores, 2026-01-01→2026-09-17. Sumas exactas vs inspección Python (684.043 movimientos / 65.117.500 bultos / 100 operarios / 248 días / 33 naves). personasPromDia 43,1 validado (591 persona-días cruzan 2+ turnos → por turno suma ~54). UI verificada con agent-browser (KPIs, gráficos, tablas, etiqueta "Varias" corregida, consola limpia). Lint/tsc sin errores nuevos.
+   258→   258→- Commit 2bb36b5; Vercel READY (dpl_B3vW…). Producción: /api/status {maq: 0}, /api/data?modulo=maq {vacio:true}, pestaña y tarjeta MAQ visibles, datos existentes intactos (ola 212, h61 38.710, tm 11.889, picking 0).
+   259→   259→
+   260→   260→Stage Summary:
+   261→   261→- Dashboard quedó: Resumen · Ola · Capacidad H61 · Planificación · Productividad H61 · Maquinistas · Picking (E-8) · Tiempos muertos · Carga de Datos.
+   262→   262→- PENDIENTE USUARIO: subir "h61 maquinista.xlsx" en producción (Carga de Datos → tarjeta MAQ; por partes automático) para activar el módulo.
+   263→   263→- Hallazgo inicial (sandbox): dotación clarkistas ~43 personas/día (M 18 / T 18,9 / N 17,4), Actividad 2 y 4 reparten ~46%/45%, Actividad 3 solo 10% (8,9 pers/día, 154 días); naves top PA2/AP2/BE2/AER/DP4; "Varias (XXX)" concentra 35,6 pers/día (21% de las filas) — foco de mejora señalado por el usuario.
+   264→   264→- Pendientes vigentes: usuario sube picking E-8 real y el H61 de maquinistas; rotar tokens al cerrar.
+   265→   265→
+   266→   266→---
+   267→   267→Task ID: 17
+   268→   268→Agent: Super Z
+   269→   269→Task: Corregir "Error HTTP 504 al procesar el archivo" (carga del picking E-8 en producción).
+   270→   270→
+   271→   271→Work Log:
+   272→   272→- Diagnóstico: 504 = la llamada que procesa el archivo superó maxDuration 300s de Vercel. El picking era el único tipo que (a) no usaba streaming (workbookARecords materializa todo), (b) guardaba raw: JSON.stringify(fila) de hasta 2KB por evento, (c) insertaba en createMany de solo 400 filas -> miles de round-trips a Neon con cientos de miles de eventos. Evidencia de producción: maq "h61 maquinista.xlsx" había entrado OK (76.537 filas, 14:02) y picking seguía en 0 -> el intento del E-8 (log de eventos, mucho más grande) reventó por tiempo.
+   273→   273→- Pipeline POR PASOS para picking (cliente dirige): /api/upload al completar las partes responde fase:'armado' SIN procesar (validación liviana de índices); nuevo /api/upload/procesar con paso=parseo (arma buffer paginando partes de a 6, XLSX.read dense + streaming, auto-mapeo con la primera fila, guarda tandas de 2000 filas mapeadas en UploadStage como JSON compacto) -> paso=insertar (mueve ~50k filas por llamada a PickingEvento con transacción createMany+delete stage: reanudable, sin duplicados ni huecos) -> paso=cerrar (marca batch cerrado). Reintento seguro en cada paso; parseo con respuesta perdida -> cliente cae a insertar directamente.
+   274→   274→- Schema nuevo UploadStage (id, fileId, data, createdAt, index fileId) en SQLite y Postgres; db push sandbox + vercel-build.sh lo creó en Neon al deployar. vercel.json: /api/upload/procesar con maxDuration 300 y memory 3009.
+   275→   275→- mapPicking ya no guarda raw (columna queda, null); insert de picking 400->1000; log de queries Prisma solo en dev (los INSERT de payloads grandes generaban cientos de MB de logs); streaming filasDelWorkbook también para picking en multipart legacy.
+   276→   276→- getPicking reescrito por OOM en sandbox (258k eventos -> 2,97GB -> kill): ahora groupBy(fecha,operario) + tandas de FECHAS con presupuesto 20k filas/query; cada grupo queda completo en su tanda -> matemática intacta. Además ~2x más rápido (9,7s -> 4,3s con 256k eventos).
+   277→   277→- Semántica REEMPLAZO para picking web: si el parseo es exitoso se limpia PickingEvento + uploadBatch tipo picking antes de insertar (antes era append-only y re-subir el archivo duplicaba eventos silenciosamente; el alert de la web dice "cada carga reemplaza"). Si el parseo falla, los datos viejos quedan intactos. Tarjeta PICKING actualizada.
+   278→   278→- Tests: E2E scripts/test_picking_staged.py con sintético de 256.500 eventos (14,9MB): chunks 1,5s -> parseo 8,6s -> 6 tandas insertar 14,7s (cada una <3s) -> cerrar; reemplazo exacto 515.408->256.500 (probó que re-subir no duplica); reanudabilidad (insertar extra = 0). UI con agent-browser: progreso visible ("Preparando…", "Insertando en la base… N filas (quedan M)", "OK: 256.500 filas procesadas"), pestaña Picking (E-8) renderiza 256k eventos sin OOM, consola limpia. Nota: sintético de 48MB/842k voltea el DEV sandbox (4GB compartidos); en producción (3009MB dedicados) el pico estimado es ~1,8GB.
+   279→   279→- tsc/eslint sin errores nuevos. Commits ab29d67 + chore; Vercel READY (dpl_FUcpmzBVhMKGeSubebrH6meTuZfJ). Producción verificada sin tocar datos: status intacto {ola 212, h61 38710, tm 11889, picking 0, maq 76537}, tipo inválido -> 400, paso inválido -> 400, parseo sin partes -> 404.
+   280→   280→
+   281→   281→Stage Summary:
+   282→   282→- El usuario ya puede reintentar la carga del picking E-8 real en producción: el procesamiento va por tandas con progreso en vivo y ninguna llamada supera el timeout; si algo falla, reintentar no duplica (y si el archivo ya había parseado, sigue solo con la inserción).
+   283→   283→- getPicking también quedó a prueba de archivos grandes: la pestaña Picking (E-8) no se voltea con cientos de miles de eventos.
+   284→   284→- Pendientes vigentes: usuario sube picking E-8 real (producción, 0 filas hoy); confirmar semántica ZONSTS/ALLSTS con datos reales; próxima fase: cruce de información + optimización de preparación + modelo de planificación; rotar tokens al cerrar.
+   285→   285→
+   286→   286→---
+   287→   287→Task ID: 18
+   288→   288→Agent: Super Z
+   289→   289→Task: Fix "prisma.uploadChunk.upsert() ... project size limit (512 MB) exceeded" (error 53100, base Neon llena) + Maquinistas: distinguir APROS y HOMOGENEOS (personas/día por tarea y actividad).
+   290→   290→
+   291→   291→Work Log:
+   292→   292→- Diagnóstico: la base Neon (tope duro 512 MB) se llenó de partes base64 de reintentos abortados del E-8. Con TTL de 6 h que solo corría al iniciar una subida nueva, 2-3 reintentos del mismo archivo (base64 = 1,33× el archivo) superaban el tope y TODO INSERT moría con 53100 "could not extend file".
+   293→   293→- Schema (SQLite+Postgres): UploadChunk.data String→Bytes (bytea, -25%); MaqOpNave + apros Int @default(0) y homogeneos Int @default(0).
+   294→   294→- upload route: i=0 borra TODO el staging previo (chunks + tandas huérfanas >2 h); chunks guardados como bytea; LIMITE_ARCHIVO 300→200 MB; errores 53100 → HTTP 507 con mensaje claro ("usá Liberar espacio").
+   295→   295→- procesar route + stage.ts: parseo borra chunks/stage de otros intentos; UploadStage guarda JSON comprimido con gzip (~8× menos; base64 gzip detectado por magic H4sI, lectura retrocompatible); manejo de 53100 en guardarTanda.
+   296→   296→- NUEVO /api/mantenimiento: GET diagnóstico (pg_database_size, pg_total_relation_size por tabla, filas, staging), POST limpieza de staging + VACUUM ANALYZE. Nunca toca datos.
+   297→   297→- Carga de Datos: tarjeta "Mantenimiento de la base" con botón "Liberar espacio" (POST + mensaje con uso MB de 512).
+   298→   298→- vercel-build.sh: nuevo scripts/prepush-neon.cjs antes del db push — DROPea UploadChunk (staging descartable, la recrea el push con el tipo nuevo; con la base llena era imposible recrear in-place) y limpia/VACUUM UploadStage. Primer deploy falló por la conversión text→bytea con tabla llena; el segundo salió READY.
+   299→   299→- Maquinistas APROS/HOMOGENEOS: verificado con scripts/verify_maq_semantica.py — TOT_HOMOGENEOS = STD + REALMAC_XD + REALMAC_STD (90.651/90.651 filas), TOTAL = Σ HORA_00..23 (90.651/90.651), TOT_APROS_TOTAL a veces 0 con componentes >0 → apros = TOT_APROS + TOT_APROS_PARCIAL. HALLAZGO: apros/homog NO equivalen a actividad 2/4 (ambas actividades hacen ambas tareas; p.ej. act2: 14.277 filas apros vs 13.130 homog) → se clasifica por movimientos, no por actividad.
+   300→   300→- ingest.ts mapMaq/ingestMaq: + apros/homogeneos (suma en fusión de claves). agg.ts getMaquinistas: bloque "tareas" con movApros/movHom, personasProm por tarea (distintos operarios/día), serie porDia (apros/homogéneos/ambas, 248 días) y cruce tarea×actividad.
+   301→   301→- maquinistas.tsx: sección "Apros vs Homogéneos" (LineChart diario 3 series + tabla tarea×actividad con badges + nota metodológica); alert de lectura ampliado.
+   302→   302→- Tests sandbox: maq E2E por chunks (9 partes, 76.537 filas, 0 errores, 13,1 s); picking staged E2E con picking-mediano-test.xlsx (256.500 filas, reemplazo exacto, 0 duplicadas — bytea+gzip OK); mantenimiento GET/POST OK en SQLite (fallback sin tamaños). tsc/eslint sin errores nuevos.
+   303→   303→- Producción: deploy dpl_BUC8NhxMQCVQeCUQCfQM5oDuz4c1 READY → /api/mantenimiento: base 512→80,3 MB tras el drop (las partes abortadas eran ~430 MB) → re-subido "h61 maquinista.xlsx" por chunks (76.537 filas, 0 errores, 48,6 s) → /api/data?modulo=maq tareas OK → UI verificada con agent-browser (sección Apros vs Homogéneos con gráfico y tabla, botón Liberar espacio, sin errores de consola). Base final: 103,9 MB / 512 MB, staging 0.
+   304→   304→
+   305→   305→Stage Summary:
+   306→   306→- Producción: {ola 212, h61 38.710, tm 11.889, picking 0, maq 76.537 con apros/homog}. Base sana (104/512 MB) y con auto-limpieza en cada subida + botón de mantenimiento.
+   307→   307→- Apros vs Homogéneos (ene→sep 2026): 29,4 personas/día hacen apros (80 personas; 281.776 movimientos) y 14,1 homogéneos (72; 74.920). Cruce: apros ≈ repartido entre Actividad 2 (28,2 pers/día) y 4 (27,7); homogéneos más en Actividad 2 (13,6) que 4 (11,5); Actividad 3 marginal (7,4 / 4,5). Máx 13 personas el mismo día en ambas tareas.
+   308→   308→- La subida del picking E-8 real queda lista para reintentar: peak de espacio ahora = tamaño del archivo (bytea) + stage comprimido, con limpieza automática al iniciar/reintentar.
+   309→   309→- Pendientes vigentes: usuario sube picking E-8 real; confirmar semántica ZONSTS/ALLSTS con datos reales; próxima fase: cruce de información + optimización de preparación + modelo de planificación; rotar tokens al cerrar.
+   310→   310→
