@@ -11,8 +11,12 @@ export const maxDuration = 300
 //  1) multipart/form-data con 'tipo' y 'file'  -> archivo completo (chico/mediano).
 //  2) JSON { modo:'chunk', tipo, fileId, i, total, data } -> subida por partes
 //     para archivos grandes (Vercel limita el body de cada request a ~4,5 MB).
-//     Cada parte se guarda en UploadChunk (base64) y cuando están todas se
-//     arma el buffer y se procesa igual que el modo 1.
+//     Cada parte se guarda en UploadChunk. Para los tipos con agregación
+//     (ola/h61/tm/maq) al completarse se arma el buffer y se procesa acá.
+//     Para PICKING (E-8, cientos de miles de eventos) NO se procesa acá: se
+//     responde fase:'armado' y el cliente dirige /api/upload/procesar por
+//     pasos (parseo -> insertar -> cerrar); procesar todo en esta llamada
+//     superaba el timeout de Vercel (HTTP 504).
 // El script Python (python/subir_archivo.py) sigue disponible via /api/batch.
 const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking', 'maq']
 const LIMITE_B64 = 8 * 1024 * 1024      // tope de base64 por parte (cliente usa ~2,7 MB)
@@ -39,9 +43,9 @@ async function procesarBuffer(tipo: TipoCarga, buf: Buffer, nombre: string) {
     return NextResponse.json({ error: 'no se pudo leer el archivo (¿es un Excel/CSV válido?)' }, { status: 400 })
   }
 
-  if (tipo === 'h61' || tipo === 'maq') {
-    // H61/maquinistas: el archivo puede tener cientos de miles de filas — streaming con
-    // generador (una fila viva por vez) en lugar del array completo de records.
+  if (tipo === 'h61' || tipo === 'maq' || tipo === 'picking') {
+    // Tipos con muchas filas: streaming con generador (una fila viva por vez)
+    // en lugar del array completo de records.
     const it = filasDelWorkbook(wb)
     const primera = it.next()
     if (primera.done || !primera.value || !Object.keys(primera.value).length) {
@@ -102,6 +106,17 @@ export async function POST(req: NextRequest) {
       const recibidos = await db.uploadChunk.count({ where: { fileId } })
       if (recibidos < total) {
         return NextResponse.json({ ok: true, fase: 'chunk', recibidos, total })
+      }
+
+      // PICKING: validación liviana (solo índices, sin cargar los datos) y el
+      // cliente continúa por pasos en /api/upload/procesar. Las partes se
+      // conservan: las consume el paso 'parseo' y ahí se borran.
+      if (tipo === 'picking') {
+        const idxs = await db.uploadChunk.findMany({ where: { fileId }, orderBy: { idx: 'asc' }, select: { idx: true } })
+        if (idxs.length !== total || idxs.some((p, k) => p.idx !== k)) {
+          return NextResponse.json({ error: `faltan partes del archivo (${idxs.length}/${total})` }, { status: 409 })
+        }
+        return NextResponse.json({ ok: true, fase: 'armado', fileId, total, tipo })
       }
 
       // completas: armar el archivo original. IMPORTANTE: decodificar cada parte

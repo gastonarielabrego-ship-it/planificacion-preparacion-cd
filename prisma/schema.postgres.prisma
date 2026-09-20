@@ -201,3 +201,13 @@ model UploadChunk {
   createdAt DateTime @default(now())
   @@unique([fileId, idx])
 }
+
+// Filas ya mapeadas de un archivo por partes, esperando inserción final por tandas
+// (pipeline por pasos para que ninguna llamada al servidor supere el timeout de Vercel)
+model UploadStage {
+  id        Int      @id @default(autoincrement())
+  fileId    String
+  data      String // JSON: array de filas compactas
+  createdAt DateTime @default(now())
+  @@index([fileId])
+}

@@ -133,7 +133,7 @@ export function autoMapPicking(muestra: Record<string, unknown>): PickingMapping
   }
 }
 
-function mapPicking(r: Record<string, unknown>, mapping: PickingMapping | null) {
+export function mapPicking(r: Record<string, unknown>, mapping: PickingMapping | null) {
   const map = mapping ?? autoMapPicking(r)
   const src = (k: keyof PickingMapping): unknown =>
     map && map[k] ? r[map[k] as string] : r[k]
@@ -175,7 +175,6 @@ function mapPicking(r: Record<string, unknown>, mapping: PickingMapping | null) 
     ubicacion: str(src('ubicacion')),
     nivel: str(src('nivel')),
     minutos: num(src('minutos')),
-    raw: JSON.stringify(r).slice(0, 2000),
   }
 }
 
@@ -513,7 +512,7 @@ async function ingestPicking(records: Iterable<Record<string, unknown>>, mapping
     if (!m) { errores++; continue }
     rows.push({ ...m, batch })
   }
-  for (const c of chunk(rows, 400)) await db.pickingEvento.createMany({ data: c as never })
+  for (const c of chunk(rows, 1000)) await db.pickingEvento.createMany({ data: c as never })
   return { insertados: rows.length, errores, rows }
 }
 

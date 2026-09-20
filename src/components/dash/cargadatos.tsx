@@ -26,7 +26,7 @@ const TARJETAS = [
   { tipo: 'h61', titulo: 'H61 — Preparación por hora', desc: 'Producción por hora de cada colaborador (8 h vs 12 h/extras + actividad). Se sube por partes automáticamente, sin límite de tamaño', color: 'bg-teal-100 text-teal-800' },
   { tipo: 'maq', titulo: 'H61 — Maquinistas (clarkistas)', desc: 'H61 de maquinistas: personas por actividad y naves asignadas (columna CIRCUITO), movimientos de clark y bultos. Archivo: “h61 maquinista.xlsx”. Se sube por partes automáticamente', color: 'bg-lime-100 text-lime-800' },
   { tipo: 'tm', titulo: 'Tiempos muertos', desc: 'Eventos con motivo y observación; se agrupan automáticamente (APRO, NAVE, PASILLO, UBICACIÓN…). Archivo: “tiempos muertos pasado.xlsx”', color: 'bg-amber-100 text-amber-800' },
-  { tipo: 'picking', titulo: 'Picking (E-8)', desc: 'Reporte E-8 de producción por picking: tiempo muerto entre levantes, bultos por zona (naves), personas por actividad, recorridos, traslados y productividad neta / super neta. Archivos: “produccion picking…”, “Tiempos E-8…”. Archivo grande: se sube por partes automáticamente', color: 'bg-rose-100 text-rose-800' },
+  { tipo: 'picking', titulo: 'Picking (E-8)', desc: 'Reporte E-8 de producción por picking: tiempo muerto entre levantes, bultos por zona (naves), personas por actividad, recorridos, traslados y productividad neta / super neta. Archivos: “produccion picking…”, “Tiempos E-8…”. Cada carga REEMPLAZA el picking anterior; los archivos grandes se suben por partes y se procesan por tandas automáticamente', color: 'bg-rose-100 text-rose-800' },
 ]
 
 const TAM_PARTE = 2 * 1024 * 1024 // 2 MB crudos por parte (~2,7 MB en base64, bajo el límite de Vercel)
@@ -45,7 +45,7 @@ async function postConReintentos(body: Record<string, unknown>): Promise<Record<
   let ultimo: Error | null = null
   for (let intento = 0; intento < 3; intento++) {
     try {
-      const r = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const r = await fetch(body.paso ? '/api/upload/procesar' : '/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
       if (r.ok && !j.error) return j
       const msg = String(j.error ?? `Error HTTP ${r.status} al procesar el archivo`)
@@ -60,6 +60,51 @@ async function postConReintentos(body: Record<string, unknown>): Promise<Record<
     await new Promise((res) => setTimeout(res, 1500))
   }
   throw ultimo ?? new Error('Error de red al subir la parte')
+}
+
+// Pipeline por pasos para PICKING (E-8): el archivo puede tener cientos de
+// miles de eventos y procesarlo entero en el servidor supera el timeout de la
+// plataforma (HTTP 504). Acá el cliente dirige: parseo -> insertar en tandas
+// -> cerrar. Cada paso es reanudable, por eso reintentar es seguro.
+async function procesarPickingPorPasos(
+  fileId: string,
+  onProgreso: (msg: string) => void,
+): Promise<{ insertados: number; desde?: string; hasta?: string }> {
+  onProgreso('Preparando el archivo en el servidor (parseo)…')
+  let p: Record<string, unknown>
+  try {
+    p = await postConReintentos({ paso: 'parseo', fileId })
+  } catch (e) {
+    const msg = (e as Error).message
+    // si el parseo ya se había completado pero se perdió la respuesta, el stage
+    // ya está cargado: se sigue directamente con la inserción
+    if (!/no hay partes/i.test(msg)) throw e
+    p = {}
+  }
+  const total = Number(p.filas ?? 0)
+  if (!total) throw new Error('el archivo no tuvo filas utilizables')
+  let insertados = 0
+  let restantes = -1 // tandas que devuelve el servidor (terminator del bucle)
+  let sinAvance = 0
+  while (restantes !== 0) {
+    const r = await postConReintentos({ paso: 'insertar', fileId })
+    insertados += Number(r.insertados ?? 0)
+    restantes = Number(r.restantes ?? 0)
+    const faltan = total ? Math.max(0, total - insertados) : 0
+    const msg = `Insertando en la base… ${insertados.toLocaleString('es')} filas`
+    onProgreso(faltan > 0 ? `${msg} (quedan ${faltan.toLocaleString('es')})` : msg)
+    if (restantes !== 0 && faltan === 0) break // por si el servidor no reporta tandas
+    if (Number(r.insertados ?? 0) === 0) {
+      sinAvance++
+      if (sinAvance >= 3) throw new Error('el servidor no pudo avanzar con la inserción; probá de nuevo')
+    } else {
+      sinAvance = 0
+    }
+  }
+  if (!insertados) throw new Error('no se pudo insertar ninguna fila; subí el archivo de nuevo')
+  onProgreso('Cerrando la carga…')
+  const c = await postConReintentos({ paso: 'cerrar', fileId })
+  return { insertados: Number(c.insertados ?? insertados), desde: p.desde as string | undefined, hasta: p.hasta as string | undefined }
 }
 
 export function CargaDatosTab() {
@@ -93,7 +138,12 @@ export function CargaDatosTab() {
         const data = aBase64(await file.slice(i * TAM_PARTE, (i + 1) * TAM_PARTE).arrayBuffer())
         j = await postConReintentos({ modo: 'chunk', tipo, fileId, nombre: file.name, i, total, data })
         const recibidos = Number(j.recibidos ?? i + 1)
-        if (total > 1) setRes((r) => ({ ...r, [tipo]: j.fase === 'chunk' ? `Partes ${recibidos}/${total} recibidas…` : 'Procesando en el servidor…' }))
+        if (total > 1 && j.fase === 'chunk') setRes((r) => ({ ...r, [tipo]: `Partes ${recibidos}/${total} recibidas…` }))
+      }
+      if (j.fase === 'armado') {
+        // Picking por pasos: parseo + inserción en tandas + cierre
+        const r2 = await procesarPickingPorPasos(String(j.fileId ?? fileId), (msg) => setRes((r) => ({ ...r, [tipo]: msg })))
+        j = { insertados: r2.insertados, desde: r2.desde, hasta: r2.hasta }
       }
       if (j.fase !== 'procesado' && !('insertados' in j)) {
         throw new Error('el servidor no terminó de procesar el archivo; probá de nuevo')

@@ -4,6 +4,7 @@
   "framework": "nextjs",
   "functions": {
     "src/app/api/upload/route.ts": { "maxDuration": 300, "memory": 3009 },
+    "src/app/api/upload/procesar/route.ts": { "maxDuration": 300, "memory": 3009 },
     "src/app/api/seed/route.ts": { "maxDuration": 300 },
     "src/app/api/batch/route.ts": { "maxDuration": 300 },
     "src/app/api/data/route.ts": { "maxDuration": 120 }

@@ -914,11 +914,15 @@ export async function getPicking(f: Filtros) {
   const count = await db.pickingEvento.count({ where })
   if (!count) return { registros: 0, vacio: true as const }
 
-  const [rows, fuentes] = await Promise.all([
-    db.pickingEvento.findMany({
+  // Grupos (fecha, operario) con cantidad de eventos: sirve para armar tandas
+  // de fechas con un presupuesto de filas y NO cargar la tabla completa
+  // (cientos de miles de eventos de una sola vez desbordaban la memoria).
+  const [grupos, fuentes] = await Promise.all([
+    db.pickingEvento.groupBy({
+      by: ['fecha', 'operario'],
       where,
-      orderBy: [{ fecha: 'asc' }, { operario: 'asc' }, { horaMin: 'asc' }],
-      select: { fecha: true, operario: true, nombre: true, horaMin: true, bultos: true, soporte: true, circuito: true, actividad: true, zona: true, ubicacion: true, nivel: true, minutos: true },
+      _count: { _all: true },
+      orderBy: [{ fecha: 'asc' }, { operario: 'asc' }],
     }),
     // archivos fuente cargados (para aclarar de donde salen los datos)
     db.uploadBatch.findMany({ where: { tipo: 'picking' }, orderBy: { createdAt: 'desc' }, take: 6, select: { filename: true, rows: true, createdAt: true } }),
@@ -948,7 +952,11 @@ export async function getPicking(f: Filtros) {
   const serDia = new Map<string, { eventos: number; bultos: number; gapMin: number; gapN: number }>()
   const recorridos: { fecha: string; operario: string; nombre: string | null; ubicaciones: number; zonas: number; eventos: number; bultos: number; spanMin: number; muertoMin: number; trasladosMin: number }[] = []
 
-  type PickingRow = (typeof rows)[number]
+  type PickingRow = {
+    fecha: Date; operario: string; nombre: string | null; horaMin: number | null
+    bultos: number | null; soporte: string | null; circuito: string | null; actividad: string | null
+    zona: string | null; ubicacion: string | null; nivel: string | null; minutos: number | null
+  }
 
   const ubicDe = (e: PickingRow): string | null =>
     [e.zona, e.ubicacion, e.nivel].filter(Boolean).join('-') || null
@@ -1043,19 +1051,55 @@ export async function getPicking(f: Filtros) {
     cambiosUbic += cambioUbicDia
   }
 
-  // agrupar por (fecha, operario): rows ya viene ordenado, los grupos son contiguos
-  let grupoKey = ''
-  let grupo: PickingRow[] = []
-  for (const r of rows) {
-    const k = `${dia(r.fecha)}|${r.operario}`
-    if (k !== grupoKey) {
-      procesarDia(grupo)
-      grupo = []
-      grupoKey = k
+  // Procesa los eventos por TANDAS DE FECHAS (presupuesto ~20k filas por query):
+  // cada grupo (fecha, operario) queda completo dentro de su tanda porque las
+  // fechas se empaquetan enteras — el análisis por operario-día no cambia.
+  // Empaqueta fechas hasta llegar al presupuesto (o al menos 1 por tanda si una
+  // fecha sola lo supera).
+  const fechasOrdenadas = [...new Set(grupos.map((g) => g.fecha.getTime()))].sort((a, b) => a - b)
+  const eventosPorFecha = new Map<number, number>()
+  for (const g of grupos) eventosPorFecha.set(g.fecha.getTime(), (eventosPorFecha.get(g.fecha.getTime()) ?? 0) + g._count._all)
+
+  const PRESUPUESTO_TANDA = 20000
+  let bultosTotal = 0
+  let primeraFecha: Date | null = null
+  let ultimaFecha: Date | null = null
+
+  const SELECT_PICKING = { fecha: true, operario: true, nombre: true, horaMin: true, bultos: true, soporte: true, circuito: true, actividad: true, zona: true, ubicacion: true, nivel: true, minutos: true } as const
+
+  for (let i = 0; i < fechasOrdenadas.length; ) {
+    const tanda: number[] = []
+    let presupuesto = 0
+    while (i < fechasOrdenadas.length && (tanda.length === 0 || presupuesto < PRESUPUESTO_TANDA)) {
+      const ft = fechasOrdenadas[i]
+      tanda.push(ft)
+      presupuesto += eventosPorFecha.get(ft) ?? 0
+      i++
     }
-    grupo.push(r)
+    const rows = await db.pickingEvento.findMany({
+      where: { ...where, fecha: { in: tanda.map((t) => new Date(t)) } },
+      orderBy: [{ fecha: 'asc' }, { operario: 'asc' }, { horaMin: 'asc' }],
+      select: SELECT_PICKING,
+    })
+    if (!rows.length) continue
+    if (!primeraFecha) primeraFecha = rows[0].fecha
+    ultimaFecha = rows[rows.length - 1].fecha
+
+    // agrupar por (fecha, operario): rows viene ordenado, los grupos son contiguos
+    let grupoKey = ''
+    let grupo: PickingRow[] = []
+    for (const r of rows) {
+      const k = `${dia(r.fecha)}|${r.operario}`
+      if (k !== grupoKey) {
+        procesarDia(grupo)
+        grupo = []
+        grupoKey = k
+      }
+      grupo.push(r)
+    }
+    procesarDia(grupo)
+    bultosTotal += rows.reduce((a, e) => a + (e.bultos ?? 0), 0)
   }
-  procesarDia(grupo)
 
   const medianaDe = (arr: number[]): number | null => {
     if (!arr.length) return null
@@ -1064,7 +1108,6 @@ export async function getPicking(f: Filtros) {
     return s.length % 2 ? +s[mid].toFixed(2) : +((s[mid - 1] + s[mid]) / 2).toFixed(2)
   }
   const horas = (min: number) => +(min / 60).toFixed(2)
-  const bultosTotal = rows.reduce((a, e) => a + (e.bultos ?? 0), 0)
   const netoTotal = Math.max(0, spanTotal - muertoTotal)
   // super neto: tiempo de operacion WMS (MINUTOS) acotado al neto; sin MINUTOS, super neto = neto
   const superNetoTotal = minutosTotal > 0 ? Math.min(minutosTotal, netoTotal) : netoTotal
@@ -1093,8 +1136,8 @@ export async function getPicking(f: Filtros) {
   return {
     registros: count,
     vacio: false as const,
-    desde: dia(rows[0].fecha),
-    hasta: dia(rows[rows.length - 1].fecha),
+    desde: primeraFecha ? dia(primeraFecha) : undefined,
+    hasta: ultimaFecha ? dia(ultimaFecha) : undefined,
     umbralMuertoMin: UMBRAL_MUERTO_PICKING,
     conUbicacion: cambiosUbic > 0,
     bultos: bultosTotal,
