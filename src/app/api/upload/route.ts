@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { ingestRows, TipoCarga } from '@/lib/ingest'
-import { workbookARecords } from '@/lib/xlsx'
+import { workbookARecords, filasDelWorkbook } from '@/lib/xlsx'
 import { db } from '@/lib/db'
 
 export const runtime = 'nodejs'
@@ -32,10 +32,32 @@ interface ChunkBody {
 async function procesarBuffer(tipo: TipoCarga, buf: Buffer, nombre: string) {
   let wb: XLSX.WorkBook
   try {
-    wb = XLSX.read(buf, { type: 'buffer', cellDates: true })
+    // dense: celdas en arrays compactos — imprescindible para archivos grandes
+    // (el H61 real ~26 MB consume >2 GB con lectura estándar y voltea la función)
+    wb = XLSX.read(buf, { type: 'buffer', cellDates: true, dense: true })
   } catch {
     return NextResponse.json({ error: 'no se pudo leer el archivo (¿es un Excel/CSV válido?)' }, { status: 400 })
   }
+
+  if (tipo === 'h61') {
+    // H61: el archivo puede tener cientos de miles de filas — streaming con
+    // generador (una fila viva por vez) en lugar del array completo de records.
+    const it = filasDelWorkbook(wb)
+    const primera = it.next()
+    if (primera.done || !primera.value || !Object.keys(primera.value).length) {
+      return NextResponse.json({ error: 'el archivo no tiene filas legibles' }, { status: 400 })
+    }
+    function* filas(): Generator<Record<string, unknown>> {
+      yield primera.value
+      yield* it
+    }
+    const res = await ingestRows(tipo, filas(), { batchId: `up-${Date.now()}`, filename: nombre })
+    if (res.insertados === 0) {
+      return NextResponse.json({ error: `el archivo no tuvo filas utilizables (${res.errores} descartadas — ¿faltan FECHA u OPERARIO?)` }, { status: 400 })
+    }
+    return NextResponse.json({ ok: true, tipo, insertados: res.insertados, errores: res.errores, desde: res.desde, hasta: res.hasta })
+  }
+
   const records = workbookARecords(tipo, wb)
   if (!records.length) {
     return NextResponse.json({ error: 'el archivo no tiene filas legibles' }, { status: 400 })

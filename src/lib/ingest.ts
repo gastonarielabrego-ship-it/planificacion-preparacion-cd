@@ -178,7 +178,7 @@ async function clearTipo(tipo: TipoCarga) {
 }
 
 // Ingesta de OLA (fila por dia)
-async function ingestOla(records: Record<string, unknown>[]) {
+async function ingestOla(records: Iterable<Record<string, unknown>>) {
   const vistos = new Map<string, { fecha: Date; ola: number; pendiente: number; total: number }>()
   let errores = 0
   for (const r of records) {
@@ -241,7 +241,7 @@ function ordenarHorasActivas(horas: boolean[]): number[] {
   return [...activas.filter((h) => h >= 18), ...activas.filter((h) => h <= 5)]
 }
 
-async function ingestH61(records: Record<string, unknown>[]) {
+async function ingestH61(records: Iterable<Record<string, unknown>>) {
   // acumuladores
   const op = new Map<string, { fecha: Date; operario: string; nombre: string | null; funcion: string; turno: string; horas: boolean[]; bultosHora: number[]; bultos: number; horasPorTurno: Map<string, number> }>()
   const th = new Map<string, { fecha: Date; turno: string; hora: number; bultos: number; ops: Set<string> }>()
@@ -364,7 +364,7 @@ async function ingestH61(records: Record<string, unknown>[]) {
   return { insertados: ops.length, errores, rows: ops }
 }
 
-async function ingestTM(records: Record<string, unknown>[]) {
+async function ingestTM(records: Iterable<Record<string, unknown>>) {
   const rows: ReturnType<typeof mapTM>[] = []
   let errores = 0
   for (const r of records) {
@@ -377,7 +377,7 @@ async function ingestTM(records: Record<string, unknown>[]) {
   return { insertados: rows.length, errores, rows }
 }
 
-async function ingestPicking(records: Record<string, unknown>[], mapping: PickingMapping | null, batch: string) {
+async function ingestPicking(records: Iterable<Record<string, unknown>>, mapping: PickingMapping | null, batch: string) {
   const rows: ReturnType<typeof mapPicking>[] = []
   let errores = 0
   for (const r of records) {
@@ -428,7 +428,7 @@ function mapProdCirc(r: Record<string, unknown>) {
   }
 }
 
-async function ingestProdCirc(records: Record<string, unknown>[]) {
+async function ingestProdCirc(records: Iterable<Record<string, unknown>>) {
   const rows: NonNullable<ReturnType<typeof mapProdCirc>>[] = []
   let errores = 0
   for (const r of records) {
@@ -461,15 +461,24 @@ async function ingestProdCirc(records: Record<string, unknown>[]) {
 
 export async function ingestRows(
   tipo: TipoCarga,
-  records: Record<string, unknown>[],
+  records: Iterable<Record<string, unknown>>,
   opts: { batchId: string; filename?: string; mapping?: PickingMapping | null; reemplazar?: boolean } = { batchId: 'manual' },
 ): Promise<ResultadoCarga> {
+  // Acepta arrays o generadores de streaming; cuenta las filas en el mismo pase
+  // (un generador no tiene .length). Cada ingesta consume los records UNA vez.
+  let filasLeidas = 0
+  function* contando(): Generator<Record<string, unknown>> {
+    for (const r of records) {
+      filasLeidas++
+      yield r
+    }
+  }
   let res: { insertados: number; errores: number; rows: unknown[] }
-  if (tipo === 'ola') res = await ingestOla(records)
-  else if (tipo === 'h61') res = await ingestH61(records)
-  else if (tipo === 'tm') res = await ingestTM(records)
-  else if (tipo === 'prodcirc') res = await ingestProdCirc(records)
-  else res = await ingestPicking(records, opts.mapping ?? null, opts.batchId)
+  if (tipo === 'ola') res = await ingestOla(contando())
+  else if (tipo === 'h61') res = await ingestH61(contando())
+  else if (tipo === 'tm') res = await ingestTM(contando())
+  else if (tipo === 'prodcirc') res = await ingestProdCirc(contando())
+  else res = await ingestPicking(contando(), opts.mapping ?? null, opts.batchId)
 
   const fechas = (res.rows as { fecha: Date }[]).map((r) => r.fecha.getTime())
   let minT = Infinity, maxT = -Infinity
@@ -493,7 +502,7 @@ export async function ingestRows(
     },
   })
 
-  return { tipo, filas: records.length, insertados: res.insertados, errores: res.errores, desde, hasta }
+  return { tipo, filas: filasLeidas, insertados: res.insertados, errores: res.errores, desde, hasta }
 }
 
 export async function resetTipo(tipo: TipoCarga) {

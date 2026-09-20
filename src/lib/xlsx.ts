@@ -93,3 +93,59 @@ export function workbookARecords(tipo: TipoCarga, wb: XLSX.WorkBook): Record<str
   }
   return records
 }
+
+// Itera las filas de un workbook leído en modo denso como GENERADOR: crea un
+// objeto {encabezado: valor} por fila (transitorio, GC al avanzar) y libera la
+// fila del sheet a medida que se consume. Evita materializar el array completo
+// de records: el H61 real (~26 MB) necesita >2 GB si se materializa todo y
+// voltea la función serverless; con streaming el pico queda en el workbook.
+// Formatos densos soportados: '!data' (versiones nuevas) y claves numéricas
+// por fila (SheetJS 0.18.5). Fallback: workbook no denso -> sheet_to_json.
+type FilaDensa = (XLSX.CellObject | undefined)[]
+
+function* filasDeHojaDensa(
+  cantFilas: number,
+  leer: (r: number) => FilaDensa | undefined,
+  liberar: (r: number) => void,
+): Generator<Record<string, unknown>> {
+  let headers: string[] | null = null
+  for (let r = 0; r < cantFilas; r++) {
+    const fila = leer(r)
+    liberar(r) // libera la fila ya consumida (GC progresivo)
+    if (!fila) continue
+    if (!headers) {
+      headers = fila.map((c) => (c && c.v != null ? String(c.v).trim() : ''))
+      continue
+    }
+    const obj: Record<string, unknown> = {}
+    let conValor = false
+    for (let c = 0; c < fila.length; c++) {
+      const cel = fila[c]
+      if (!cel || cel.v == null) continue
+      const h = headers[c]
+      if (h) obj[h] = cel.v
+      conValor = true
+    }
+    if (!conValor) continue // fila totalmente vacía: igual que sheet_to_json (blankrows: false)
+    yield obj
+  }
+}
+
+export function* filasDelWorkbook(wb: XLSX.WorkBook): Generator<Record<string, unknown>> {
+  for (const sheetName of wb.SheetNames) {
+    const sheet = wb.Sheets[sheetName] as (XLSX.WorkSheet & { '!data'?: FilaDensa[] }) | undefined
+    if (!sheet) continue
+    const data = sheet['!data']
+    if (data) {
+      yield* filasDeHojaDensa(data.length, (r) => data[r], (r) => { data[r] = undefined })
+      continue
+    }
+    if (!sheet['!ref']) continue
+    const rango = XLSX.utils.decode_range(sheet['!ref'])
+    yield* filasDeHojaDensa(
+      rango.e.r + 1,
+      (r) => sheet[String(r)] as FilaDensa | undefined,
+      (r) => { sheet[String(r)] = undefined },
+    )
+  }
+}
