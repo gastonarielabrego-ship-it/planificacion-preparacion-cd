@@ -18,11 +18,13 @@ interface StatusData {
   h61: { registros: number; desde: string | null; hasta: string | null }
   tm: { registros: number; desde: string | null; hasta: string | null }
   picking: { registros: number; desde: string | null; hasta: string | null }
+  maq: { registros: number; desde: string | null; hasta: string | null }
 }
 
 const TARJETAS = [
   { tipo: 'ola', titulo: 'Ola y Pendiente', desc: 'Bultos a preparar por día (matriz mensual). Archivo: “Ola y Pendiente (1).xlsx”', color: 'bg-emerald-100 text-emerald-800' },
   { tipo: 'h61', titulo: 'H61 — Preparación por hora', desc: 'Producción por hora de cada colaborador (8 h vs 12 h/extras + actividad). Se sube por partes automáticamente, sin límite de tamaño', color: 'bg-teal-100 text-teal-800' },
+  { tipo: 'maq', titulo: 'H61 — Maquinistas (clarkistas)', desc: 'H61 de maquinistas: personas por actividad y naves asignadas (columna CIRCUITO), movimientos de clark y bultos. Archivo: “h61 maquinista.xlsx”. Se sube por partes automáticamente', color: 'bg-lime-100 text-lime-800' },
   { tipo: 'tm', titulo: 'Tiempos muertos', desc: 'Eventos con motivo y observación; se agrupan automáticamente (APRO, NAVE, PASILLO, UBICACIÓN…). Archivo: “tiempos muertos pasado.xlsx”', color: 'bg-amber-100 text-amber-800' },
   { tipo: 'picking', titulo: 'Picking (E-8)', desc: 'Reporte E-8 de producción por picking: tiempo muerto entre levantes, bultos por zona (naves), personas por actividad, recorridos, traslados y productividad neta / super neta. Archivos: “produccion picking…”, “Tiempos E-8…”. Archivo grande: se sube por partes automáticamente', color: 'bg-rose-100 text-rose-800' },
 ]
@@ -203,7 +205,7 @@ export function CargaDatosTab() {
         <CardContent>
           {status ? (
             <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
-              {(['ola', 'h61', 'tm', 'picking'] as const).map((k) => (
+              {(['ola', 'h61', 'tm', 'picking', 'maq'] as const).map((k) => (
                 <div key={k} className="rounded-md border p-3">
                   <p className="font-semibold uppercase text-xs text-muted-foreground">{k}</p>
                   <p className="tabular-nums">{n(status[k].registros)} filas</p>

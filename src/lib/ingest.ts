@@ -3,7 +3,7 @@
 import { db } from '@/lib/db'
 import { clasificarMotivo } from '@/lib/normaliza'
 
-export type TipoCarga = 'ola' | 'h61' | 'tm' | 'picking'
+export type TipoCarga = 'ola' | 'h61' | 'tm' | 'picking' | 'maq'
 
 const chunk = <T,>(arr: T[], n: number): T[][] => {
   const out: T[][] = []
@@ -215,6 +215,11 @@ async function clearTipo(tipo: TipoCarga) {
     await db.h61Actividad.deleteMany({})
   } else if (tipo === 'tm') await db.tiempoMuerto.deleteMany({})
   else if (tipo === 'picking') await db.pickingEvento.deleteMany({})
+  else if (tipo === 'maq') {
+    await db.maqOpNave.deleteMany({})
+    await db.maqAct.deleteMany({})
+    await db.maqNave.deleteMany({})
+  }
 }
 
 // Ingesta de OLA (fila por dia)
@@ -404,6 +409,86 @@ async function ingestH61(records: Iterable<Record<string, unknown>>) {
   return { insertados: ops.length, errores, rows: ops }
 }
 
+// H61 de MAQUINISTAS (clarkistas): fila por operario x fecha x turno x actividad x CIRCUITO (nave).
+// Encabezados reales: FUNCION, FUNCION_DESC, FECHA, TURNO, TURNO_DESC, OPERARIO, NOIMBRE,
+// ACTIVIDAD, CIRCUITO, TIEMPO_MUE, HORA_00..23, TOTAL, TOT_* y TOT_BULTOS.
+// total = movimientos de clark (TOTAL o suma de horas), bultos = TOT_BULTOS,
+// horas = horas activas distintas (las filas pueden repetir la combinacion).
+function mapMaq(r: Record<string, unknown>) {
+  const fecha = fechaDesdeYYYYMMDD(r.FECHA ?? r.fecha)
+  const operario = str(r.OPERARIO ?? r.operario)
+  if (!fecha || !operario) return null
+  const turno = (str(r.TURNO ?? r.turno) ?? '?').toUpperCase()
+  // el archivo trae "NOIMBRE" (typo de NOMBRE)
+  const nombre = str(r.NOIMBRE ?? r.NOMBRE ?? r.nombre)
+  const actividad = (str(r.ACTIVIDAD ?? r.actividad) ?? '?').toUpperCase()
+  const nave = (str(r.CIRCUITO ?? r.circuito) ?? '?').toUpperCase()
+  const horasRow = HORAS.map((h) => Math.round(num(r[h]) ?? 0))
+  let total = Math.round(num(r.TOTAL ?? r.total) ?? 0)
+  const sumaHoras = horasRow.reduce((a, b) => a + Math.max(0, b), 0)
+  if (total === 0 && sumaHoras > 0) total = sumaHoras
+  const bultos = Math.round(num(r.TOT_BULTOS ?? r.bultos) ?? 0)
+  const horasIdx: number[] = []
+  horasRow.forEach((v, i) => { if (v !== 0) horasIdx.push(i) })
+  return { fecha, turno, operario, nombre, actividad, nave, total, bultos, horasIdx }
+}
+
+async function ingestMaq(records: Iterable<Record<string, unknown>>) {
+  // clave = fecha|turno|operario|actividad|nave: el archivo puede traer varias filas
+  // para la misma combinacion (distintos aperos/bloques) — se suman y las horas se deduplican
+  const opNave = new Map<string, { fecha: Date; turno: string; operario: string; nombre: string | null; actividad: string; nave: string; total: number; bultos: number; horasSet: Set<number> }>()
+  // pre-agregados por fecha x actividad y fecha x nave: horas unicas por operario
+  const act = new Map<string, { fecha: Date; actividad: string; bultos: number; ops: Set<string>; horasPorOp: Map<string, Set<number>> }>()
+  const nav = new Map<string, { fecha: Date; nave: string; bultos: number; ops: Set<string>; horasPorOp: Map<string, Set<number>> }>()
+  let errores = 0
+
+  for (const r of records) {
+    const m = mapMaq(r)
+    if (!m) { errores++; continue }
+    const fISO = m.fecha.toISOString().slice(0, 10)
+
+    const k = `${fISO}|${m.turno}|${m.operario}|${m.actividad}|${m.nave}`
+    let o = opNave.get(k)
+    if (!o) {
+      o = { fecha: m.fecha, turno: m.turno, operario: m.operario, nombre: m.nombre, actividad: m.actividad, nave: m.nave, total: 0, bultos: 0, horasSet: new Set() }
+      opNave.set(k, o)
+    }
+    if (!o.nombre && m.nombre) o.nombre = m.nombre
+    o.total += m.total
+    o.bultos += m.bultos
+    for (const h of m.horasIdx) o.horasSet.add(h)
+
+    const ka = `${fISO}|${m.actividad}`
+    let a = act.get(ka)
+    if (!a) { a = { fecha: m.fecha, actividad: m.actividad, bultos: 0, ops: new Set(), horasPorOp: new Map() }; act.set(ka, a) }
+    a.bultos += m.bultos
+    a.ops.add(m.operario)
+    let ha = a.horasPorOp.get(m.operario)
+    if (!ha) { ha = new Set(); a.horasPorOp.set(m.operario, ha) }
+    for (const h of m.horasIdx) ha.add(h)
+
+    const kn = `${fISO}|${m.nave}`
+    let nv = nav.get(kn)
+    if (!nv) { nv = { fecha: m.fecha, nave: m.nave, bultos: 0, ops: new Set(), horasPorOp: new Map() }; nav.set(kn, nv) }
+    nv.bultos += m.bultos
+    nv.ops.add(m.operario)
+    let hn = nv.horasPorOp.get(m.operario)
+    if (!hn) { hn = new Set(); nv.horasPorOp.set(m.operario, hn) }
+    for (const h of m.horasIdx) hn.add(h)
+  }
+
+  const opRows = [...opNave.values()].map((o) => ({ fecha: o.fecha, turno: o.turno, operario: o.operario, nombre: o.nombre, actividad: o.actividad, nave: o.nave, total: o.total, bultos: o.bultos, horas: o.horasSet.size }))
+  const actRows = [...act.values()].map((a) => ({ fecha: a.fecha, actividad: a.actividad, bultos: a.bultos, operarios: a.ops.size, horas: [...a.horasPorOp.values()].reduce((acc, s) => acc + s.size, 0) }))
+  const navRows = [...nav.values()].map((v) => ({ fecha: v.fecha, nave: v.nave, bultos: v.bultos, operarios: v.ops.size, horas: [...v.horasPorOp.values()].reduce((acc, s) => acc + s.size, 0) }))
+
+  await clearTipo('maq')
+  for (const c of chunk(opRows, 400)) await db.maqOpNave.createMany({ data: c })
+  for (const c of chunk(actRows, 400)) await db.maqAct.createMany({ data: c })
+  for (const c of chunk(navRows, 400)) await db.maqNave.createMany({ data: c })
+
+  return { insertados: opRows.length, errores, rows: opRows }
+}
+
 async function ingestTM(records: Iterable<Record<string, unknown>>) {
   const rows: ReturnType<typeof mapTM>[] = []
   let errores = 0
@@ -451,6 +536,7 @@ export async function ingestRows(
   if (tipo === 'ola') res = await ingestOla(contando())
   else if (tipo === 'h61') res = await ingestH61(contando())
   else if (tipo === 'tm') res = await ingestTM(contando())
+  else if (tipo === 'maq') res = await ingestMaq(contando())
   else res = await ingestPicking(contando(), opts.mapping ?? null, opts.batchId)
 
   const fechas = (res.rows as { fecha: Date }[]).map((r) => r.fecha.getTime())

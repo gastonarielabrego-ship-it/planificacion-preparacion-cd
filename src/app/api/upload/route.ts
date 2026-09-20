@@ -14,7 +14,7 @@ export const maxDuration = 300
 //     Cada parte se guarda en UploadChunk (base64) y cuando están todas se
 //     arma el buffer y se procesa igual que el modo 1.
 // El script Python (python/subir_archivo.py) sigue disponible via /api/batch.
-const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking']
+const TIPOS: TipoCarga[] = ['ola', 'h61', 'tm', 'picking', 'maq']
 const LIMITE_B64 = 8 * 1024 * 1024      // tope de base64 por parte (cliente usa ~2,7 MB)
 const LIMITE_ARCHIVO = 300 * 1024 * 1024 // tope de seguridad del archivo armado
 const TTL_CHUNKS_MS = 6 * 60 * 60 * 1000 // limpieza de partes huérfanas (>6 h)
@@ -39,8 +39,8 @@ async function procesarBuffer(tipo: TipoCarga, buf: Buffer, nombre: string) {
     return NextResponse.json({ error: 'no se pudo leer el archivo (¿es un Excel/CSV válido?)' }, { status: 400 })
   }
 
-  if (tipo === 'h61') {
-    // H61: el archivo puede tener cientos de miles de filas — streaming con
+  if (tipo === 'h61' || tipo === 'maq') {
+    // H61/maquinistas: el archivo puede tener cientos de miles de filas — streaming con
     // generador (una fila viva por vez) en lugar del array completo de records.
     const it = filasDelWorkbook(wb)
     const primera = it.next()

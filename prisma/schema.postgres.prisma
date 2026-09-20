@@ -86,6 +86,49 @@ model H61Actividad {
   @@index([fecha])
 }
 
+// H61 de maquinistas (clarkistas): fila por operario x fecha x turno x actividad x nave.
+// nave = CIRCUITO del archivo (AP2, PA2, BE2, XXX = varios...). total = movimientos de clark,
+// bultos = TOT_BULTOS, horas = horas activas distintas dentro de la combinacion.
+model MaqOpNave {
+  id        Int      @id @default(autoincrement())
+  fecha     DateTime
+  turno     String
+  operario  String
+  nombre    String?
+  actividad String
+  nave      String
+  total     Int
+  bultos    Int
+  horas     Int
+  @@unique([fecha, turno, operario, actividad, nave])
+  @@index([fecha])
+}
+
+// Maquinistas pre-agregado por fecha x actividad: operarios distintos y horas-hombre
+// con horas unicas por operario (no duplica si comparte la hora entre naves)
+model MaqAct {
+  id        Int      @id @default(autoincrement())
+  fecha     DateTime
+  actividad String
+  bultos    Int
+  operarios Int
+  horas     Int
+  @@unique([fecha, actividad])
+  @@index([fecha])
+}
+
+// Maquinistas pre-agregado por fecha x nave: operarios distintos y horas-hombre unicas
+model MaqNave {
+  id        Int      @id @default(autoincrement())
+  fecha     DateTime
+  nave      String
+  bultos    Int
+  operarios Int
+  horas     Int
+  @@unique([fecha, nave])
+  @@index([fecha])
+}
+
 // Tiempos muertos normalizados
 model TiempoMuerto {
   id          Int      @id @default(autoincrement())

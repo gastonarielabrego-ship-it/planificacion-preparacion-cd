@@ -5,7 +5,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 300
 
 // Endpoint para el script Python: recibe lotes JSON de filas crudas.
-// Body: { tipo: 'ola'|'h61'|'tm'|'picking', rows: [...], filename?, mapping?, batchId?, final? }
+// Body: { tipo: 'ola'|'h61'|'tm'|'picking'|'maq', rows: [...], filename?, mapping?, batchId?, final? }
 // Con reemplazar=true borra los datos previos del tipo antes de insertar (primer lote).
 
 interface BatchBody {
@@ -22,8 +22,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as BatchBody
     const tipo = body.tipo as TipoCarga
-    if (!tipo || !['ola', 'h61', 'tm', 'picking'].includes(tipo)) {
-      return NextResponse.json({ error: 'tipo invalido: usar ola|h61|tm|picking' }, { status: 400 })
+    if (!tipo || !['ola', 'h61', 'tm', 'picking', 'maq'].includes(tipo)) {
+      return NextResponse.json({ error: 'tipo invalido: usar ola|h61|tm|picking|maq' }, { status: 400 })
     }
     if (!Array.isArray(body.rows)) return NextResponse.json({ error: 'falta rows[]' }, { status: 400 })
 
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
         })
       }
     } else {
-      // ola/h61/tm requieren pre-agregacion o reemplazo: acoplan los lotes en memoria del servidor
+      // ola/h61/tm/maq requieren pre-agregacion o reemplazo: acoplan los lotes en memoria del servidor
       // (el script Python los envia con reemplazar=true en un solo envio o usa la via de archivo)
       return NextResponse.json({ error: `el tipo ${tipo} debe cargarse con reemplazar=true en un unico lote, o via /api/upload` }, { status: 400 })
     }

@@ -1140,13 +1140,222 @@ export async function getPicking(f: Filtros) {
 const r1 = (x: number) => Math.round(x * 10) / 10
 const r2 = (x: number) => Math.round(x * 100) / 100
 
+// ============ MAQUINISTAS (H61 clarkistas: personas por actividad y nave) ============
+// Foco: cuantas personas realizan cada actividad y a que naves (CIRCUITO) estan asignadas.
+export async function getMaquinistas(f: Filtros) {
+  const r = rango(f)
+  const [rows, act, nav, fuentes] = await Promise.all([
+    db.maqOpNave.findMany({ where: { fecha: r }, orderBy: { fecha: 'asc' } }),
+    db.maqAct.findMany({ where: { fecha: r }, orderBy: { fecha: 'asc' } }),
+    db.maqNave.findMany({ where: { fecha: r }, orderBy: { fecha: 'asc' } }),
+    db.uploadBatch.findMany({ where: { tipo: 'maq' }, orderBy: { createdAt: 'desc' }, take: 10 }),
+  ])
+  const fuentesOut = fuentes.map((x) => ({ filename: x.filename, rows: x.rows, fecha: x.createdAt.toISOString() }))
+  if (!rows.length) {
+    return { vacio: true as const, registros: 0, meses: 0, fuentes: fuentesOut }
+  }
+
+  // etiquetas: el archivo usa XXX = varios circuitos; '?' = fila sin nave; actividades 2/3/4
+  const etiquetaNave = (nv: string) => (nv === 'XXX' ? 'Varias (XXX)' : nv === '?' ? 'Sin nave' : nv)
+  const etiquetaAct = (a: string) => ({ '2': 'Actividad 2', '3': 'Actividad 3', '4': 'Actividad 4' }[a] ?? a)
+
+  const diasSet = new Set<string>()
+  const opsDia = new Map<string, Set<string>>() // fecha -> operarios distintos del dia
+  const opsAll = new Set<string>()
+  let movimientos = 0
+  let bultos = 0
+
+  // acumulador por corte: personas distintas (total y por dia), movimientos y bultos
+  type Agr = { ops: Set<string>; porDia: Map<string, Set<string>>; mov: number; bul: number }
+  const nuevoAgr = (): Agr => ({ ops: new Set(), porDia: new Map(), mov: 0, bul: 0 })
+  const agrDe = (m: Map<string, Agr>, key: string): Agr => {
+    let a = m.get(key)
+    if (!a) { a = nuevoAgr(); m.set(key, a) }
+    return a
+  }
+  const push = (a: Agr, operario: string, fechaISO: string, total: number, bulRow: number) => {
+    a.ops.add(operario)
+    let s = a.porDia.get(fechaISO)
+    if (!s) { s = new Set(); a.porDia.set(fechaISO, s) }
+    s.add(operario)
+    a.mov += total
+    a.bul += bulRow
+  }
+
+  const porAct = new Map<string, Agr>()
+  const porNave = new Map<string, Agr>()
+  const matriz = new Map<string, Agr>() // actividad|nave
+  const porTurno = new Map<string, Agr>()
+  const turnoAct = new Map<string, Agr>() // turno|actividad
+
+  for (const rw of rows) {
+    const fISO = dia(rw.fecha)
+    diasSet.add(fISO)
+    opsAll.add(rw.operario)
+    movimientos += rw.total
+    bultos += rw.bultos
+    let g = opsDia.get(fISO)
+    if (!g) { g = new Set(); opsDia.set(fISO, g) }
+    g.add(rw.operario)
+    push(agrDe(porAct, rw.actividad), rw.operario, fISO, rw.total, rw.bultos)
+    push(agrDe(porNave, rw.nave), rw.operario, fISO, rw.total, rw.bultos)
+    push(agrDe(matriz, `${rw.actividad}|${rw.nave}`), rw.operario, fISO, rw.total, rw.bultos)
+    push(agrDe(porTurno, rw.turno), rw.operario, fISO, rw.total, rw.bultos)
+    push(agrDe(turnoAct, `${rw.turno}|${rw.actividad}`), rw.operario, fISO, rw.total, rw.bultos)
+  }
+
+  // personas promedio por dia del corte = suma de personas de cada dia / dias con datos
+  const personasProm = (a: Agr): number | null => {
+    if (!a.porDia.size) return null
+    let sum = 0
+    for (const s of a.porDia.values()) sum += s.size
+    return r1(sum / a.porDia.size)
+  }
+
+  // horas-hombre exactas por actividad y nave (horas unicas por operario-dia, de las pre-agregadas)
+  const horasAct = new Map<string, number>()
+  for (const a of act) horasAct.set(a.actividad, (horasAct.get(a.actividad) ?? 0) + a.horas)
+  const horasNave = new Map<string, number>()
+  for (const v of nav) horasNave.set(v.nave, (horasNave.get(v.nave) ?? 0) + v.horas)
+  const horasHombre = [...horasAct.values()].reduce((acc, h) => acc + h, 0)
+
+  // personas promedio por mes por actividad (de MaqAct) y por nave (de MaqNave, top 8)
+  const acumularMes = (m: Map<string, { dias: number; ops: number }>, fecha: Date, clave: string, operarios: number) => {
+    const k = `${dia(fecha).slice(0, 7)}|${clave}`
+    const cur = m.get(k) ?? { dias: 0, ops: 0 }
+    cur.dias += 1
+    cur.ops += operarios
+    m.set(k, cur)
+  }
+  const mesAct = new Map<string, { dias: number; ops: number }>()
+  for (const a of act) acumularMes(mesAct, a.fecha, a.actividad, a.operarios)
+  const porMesActividad = [...mesAct.entries()]
+    .map(([k, v]) => {
+      const [mes, clave] = k.split('|')
+      return { mes, actividad: etiquetaAct(clave), personasProm: r1(v.ops / v.dias) }
+    })
+    .sort((a, b) => a.mes.localeCompare(b.mes) || a.actividad.localeCompare(b.actividad))
+
+  const mesNav = new Map<string, { dias: number; ops: number }>()
+  for (const v of nav) acumularMes(mesNav, v.fecha, v.nave, v.operarios)
+  // top 8 naves por personas promedio global para no saturar el grafico
+  const topNaves = [...porNave.entries()]
+    .sort((a, b) => (personasProm(b[1]) ?? 0) - (personasProm(a[1]) ?? 0))
+    .slice(0, 8)
+    .map(([nv]) => nv)
+
+  const personasPromDiaGlobal = (() => {
+    let sum = 0
+    for (const s of opsDia.values()) sum += s.size
+    return diasSet.size ? r1(sum / diasSet.size) : null
+  })()
+
+  // turno: personas promedio y desglose por actividad dentro de cada turno
+  const turnosOrden = ['M', 'T', 'N', '?'].filter((t) => porTurno.has(t))
+  const porTurnoOut = turnosOrden.map((turno) => {
+    const t = porTurno.get(turno)!
+    const acts = turnosOrden.length
+      ? [...turnoAct.entries()]
+          .filter(([k]) => k.startsWith(`${turno}|`))
+          .map(([k, a]) => ({ actividad: etiquetaAct(k.split('|')[1]), personasProm: personasProm(a), operarios: a.ops.size }))
+          .sort((a, b) => (b.personasProm ?? 0) - (a.personasProm ?? 0))
+      : []
+    return { turno, personasPromDia: personasProm(t), operarios: t.ops.size, movimientos: t.mov, bultos: t.bul, porActividad: acts }
+  })
+
+  // naves por operario por dia: indicador de dispersión (cuantas naves atiende cada persona)
+  const navesPorOpDia = new Map<string, Map<string, Set<string>>>() // fecha -> operario -> naves
+  for (const rw of rows) {
+    const fISO = dia(rw.fecha)
+    let porOp = navesPorOpDia.get(fISO)
+    if (!porOp) { porOp = new Map(); navesPorOpDia.set(fISO, porOp) }
+    let s = porOp.get(rw.operario)
+    if (!s) { s = new Set(); porOp.set(rw.operario, s) }
+    s.add(rw.nave)
+  }
+  let sumaNavesPorOp = 0
+  let nOpsNaves = 0
+  for (const porOp of navesPorOpDia.values()) {
+    for (const s of porOp.values()) { sumaNavesPorOp += s.size; nOpsNaves++ }
+  }
+
+  return {
+    registros: rows.length,
+    vacio: false as const,
+    desde: dia(rows[0].fecha),
+    hasta: dia(rows[rows.length - 1].fecha),
+    meses: new Set([...diasSet].map((d) => d.slice(0, 7))).size,
+    operarios: opsAll.size,
+    dias: diasSet.size,
+    personasPromDia: personasPromDiaGlobal,
+    movimientos,
+    bultos,
+    horasHombre,
+    navesActivas: porNave.size,
+    navesPorOperarioDia: nOpsNaves ? r2(sumaNavesPorOp / nOpsNaves) : null,
+    porActividad: [...porAct.entries()]
+      .map(([actividad, a]) => ({
+        actividad: etiquetaAct(actividad),
+        codigo: actividad,
+        operarios: a.ops.size,
+        personasPromDia: personasProm(a),
+        dias: a.porDia.size,
+        movimientos: a.mov,
+        bultos: a.bul,
+        horas: horasAct.get(actividad) ?? 0,
+      }))
+      .sort((a, b) => (b.personasPromDia ?? 0) - (a.personasPromDia ?? 0)),
+    porNave: [...porNave.entries()]
+      .map(([nave, a]) => ({
+        nave: etiquetaNave(nave),
+        codigo: nave,
+        operarios: a.ops.size,
+        personasPromDia: personasProm(a),
+        dias: a.porDia.size,
+        movimientos: a.mov,
+        bultos: a.bul,
+        horas: horasNave.get(nave) ?? 0,
+      }))
+      .sort((a, b) => (b.personasPromDia ?? 0) - (a.personasPromDia ?? 0)),
+    matriz: [...matriz.entries()]
+      .map(([k, a]) => {
+        const [actividad, nave] = k.split('|')
+        return {
+          actividad: etiquetaAct(actividad),
+          nave: etiquetaNave(nave),
+          personasPromDia: personasProm(a),
+          operarios: a.ops.size,
+          dias: a.porDia.size,
+          movimientos: a.mov,
+        }
+      })
+      .sort((a, b) => (b.personasPromDia ?? 0) - (a.personasPromDia ?? 0)),
+    porTurno: porTurnoOut,
+    porMesActividad,
+    porMesNave: porMesNaveFiltrado(mesNav, topNaves),
+    fuentes: fuentesOut,
+  }
+}
+
+// naves por mes limitadas al top (reusa el acumulado mesNav)
+function porMesNaveFiltrado(mesNav: Map<string, { dias: number; ops: number }>, topNaves: string[]) {
+  return [...mesNav.entries()]
+    .filter(([k]) => topNaves.includes(k.split('|')[1]))
+    .map(([k, v]) => {
+      const [mes, nave] = k.split('|')
+      return { mes, nave: nave === 'XXX' ? 'Varias (XXX)' : nave === '?' ? 'Sin nave' : nave, personasProm: r1(v.ops / v.dias) }
+    })
+    .sort((a, b) => a.mes.localeCompare(b.mes) || a.nave.localeCompare(b.nave))
+}
+
 // ============ STATUS ============
 export async function getStatus() {
-  const [ola, h61, tm, pk, batches] = await Promise.all([
+  const [ola, h61, tm, pk, mq, batches] = await Promise.all([
     db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.tiempoMuerto.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.pickingEvento.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
+    db.maqOpNave.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.uploadBatch.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
   ])
   return {
@@ -1154,6 +1363,7 @@ export async function getStatus() {
     h61: { registros: h61._count, desde: h61._min.fecha, hasta: h61._max.fecha },
     tm: { registros: tm._count, desde: tm._min.fecha, hasta: tm._max.fecha },
     picking: { registros: pk._count, desde: pk._min.fecha, hasta: pk._max.fecha },
+    maq: { registros: mq._count, desde: mq._min.fecha, hasta: mq._max.fecha },
     batches: batches.map((b) => ({ ...b, createdAt: b.createdAt.toISOString() })),
   }
 }

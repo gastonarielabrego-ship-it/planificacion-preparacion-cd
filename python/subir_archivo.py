@@ -75,10 +75,13 @@ TAMANIO_LOTE = 5000  # filas por request
 # Detección de tipo por nombre de archivo
 # ---------------------------------------------------------------------------
 def detectar_tipo(nombre_archivo: str):
-    """Devuelve 'h61'|'picking'|'tm'|'ola' según el nombre del archivo, o None."""
+    """Devuelve 'maq'|'h61'|'picking'|'tm'|'ola' según el nombre del archivo, o None."""
     n = nombre_archivo.lower()
     for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         n = n.replace(a, b)
+    # maquinistas (H61 de clarkistas) ANTES que h61: el archivo se llama "h61 maquinista.xlsx"
+    if "maquinista" in n or "clarkista" in n:
+        return "maq"
     if "h61" in n:
         return "h61"
     # picking = reporte E-8 (producción por picking)
@@ -426,7 +429,7 @@ def main():
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--carpeta", help="carpeta con los archivos (detecta el tipo de cada uno)")
     src.add_argument("--archivo", help="ruta de un único archivo .xlsx/.xls/.csv")
-    ap.add_argument("--tipo", choices=["picking", "h61", "ola", "tm"], help="tipo de carga (solo con --archivo)")
+    ap.add_argument("--tipo", choices=["picking", "h61", "ola", "tm", "maq"], help="tipo de carga (solo con --archivo)")
     ap.add_argument("--url", default="http://localhost:3000", help="URL base de la app (default: http://localhost:3000)")
     ap.add_argument("--hoja", default=None, help="nombre de la hoja (xlsx); default: todas/primera")
     ap.add_argument("--lote", type=int, default=TAMANIO_LOTE, help=f"filas por lote en picking (default {TAMANIO_LOTE})")

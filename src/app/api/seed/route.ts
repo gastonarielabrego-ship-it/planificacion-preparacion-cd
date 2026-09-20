@@ -15,13 +15,14 @@ const PATRONES: Record<TipoCarga, RegExp> = {
   h61: /h61/i,
   tm: /(muertos|tm)/i,
   picking: /(picking|piking|pickeo|e-?8)/i,
+  maq: /(maquinista|clarkista)/i,
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as { tipo?: string; filename?: string }
     const tipo = body.tipo as TipoCarga
-    if (!tipo || !['ola', 'h61', 'tm', 'picking'].includes(tipo)) {
+    if (!tipo || !['ola', 'h61', 'tm', 'picking', 'maq'].includes(tipo)) {
       return NextResponse.json({ error: 'tipo invalido' }, { status: 400 })
     }
 

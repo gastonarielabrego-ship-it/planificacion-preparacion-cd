@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getResumen, getPlanificacion, getH61, getTM, getPicking, getOla, getCapacidad } from '@/lib/agg'
+import { getResumen, getPlanificacion, getH61, getTM, getPicking, getOla, getCapacidad, getMaquinistas } from '@/lib/agg'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
       case 'capacidad': data = await getCapacidad(filtros); break
       case 'tm': data = await getTM(filtros); break
       case 'picking': data = await getPicking(filtros); break
+      case 'maq': data = await getMaquinistas(filtros); break
       default: return NextResponse.json({ error: `modulo invalido: ${modulo}` }, { status: 400 })
     }
     return NextResponse.json(data)
