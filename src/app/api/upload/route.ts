@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { ingestRows, TipoCarga } from '@/lib/ingest'
 import { workbookARecords, filasDelWorkbook } from '@/lib/xlsx'
+import { respuestaSinFilas, respuestaLecturaFallida } from '@/lib/diag'
 import { db } from '@/lib/db'
 
 export const runtime = 'nodejs'
@@ -46,14 +47,14 @@ interface ChunkBody {
   data?: string
 }
 
-async function procesarBuffer(tipo: TipoCarga, buf: Buffer, nombre: string) {
+async function procesarBuffer(tipo: TipoCarga, buf: Buffer, nombre: string, fileIdTemp: string) {
   let wb: XLSX.WorkBook
   try {
     // dense: celdas en arrays compactos — imprescindible para archivos grandes
     // (el H61 real ~26 MB consume >2 GB con lectura estándar y voltea la función)
     wb = XLSX.read(buf, { type: 'buffer', cellDates: true, dense: true })
-  } catch {
-    return NextResponse.json({ error: 'no se pudo leer el archivo (¿es un Excel/CSV válido?)' }, { status: 400 })
+  } catch (e) {
+    return await respuestaLecturaFallida(buf, fileIdTemp, nombre, e)
   }
 
   if (tipo === 'h61' || tipo === 'maq' || tipo === 'picking') {
@@ -62,7 +63,9 @@ async function procesarBuffer(tipo: TipoCarga, buf: Buffer, nombre: string) {
     const it = filasDelWorkbook(wb)
     const primera = it.next()
     if (primera.done || !primera.value || !Object.keys(primera.value).length) {
-      return NextResponse.json({ error: 'el archivo no tiene filas legibles' }, { status: 400 })
+      // diagnóstico del archivo (tipo/hojas/muestra) guardado en UploadStage y
+      // consultable por /api/upload/diag; las partes quedan para descargarlas
+      return await respuestaSinFilas(buf, wb, fileIdTemp, nombre)
     }
     function* filas(): Generator<Record<string, unknown>> {
       yield primera.value
@@ -77,7 +80,7 @@ async function procesarBuffer(tipo: TipoCarga, buf: Buffer, nombre: string) {
 
   const records = workbookARecords(tipo, wb)
   if (!records.length) {
-    return NextResponse.json({ error: 'el archivo no tiene filas legibles' }, { status: 400 })
+    return await respuestaSinFilas(buf, wb, fileIdTemp, nombre)
   }
   const res = await ingestRows(tipo, records, { batchId: `up-${Date.now()}`, filename: nombre })
   return NextResponse.json({ ok: true, tipo, insertados: res.insertados, errores: res.errores, desde: res.desde, hasta: res.hasta })
@@ -168,12 +171,18 @@ export async function POST(req: NextRequest) {
       if (buf.length < 1 || buf.length > LIMITE_ARCHIVO) {
         return NextResponse.json({ error: `tamaño de archivo fuera de rango (${Math.round(buf.length / 1024)} KB)` }, { status: 400 })
       }
+      let resp: NextResponse | undefined
       try {
-        return await procesarBuffer(tipo, buf, String(body.nombre ?? fileId).slice(0, 200))
+        resp = await procesarBuffer(tipo, buf, String(body.nombre ?? fileId).slice(0, 200), fileId)
       } finally {
-        // las partes ya no se necesitan (el reintento vuelve a subir todo)
-        await db.uploadChunk.deleteMany({ where: { fileId } })
+        // las partes ya no se necesitan (el reintento vuelve a subir todo),
+        // SALVO que el archivo no haya tenido filas legibles: en ese caso se
+        // conservan para poder analizarlas a distancia (/api/upload/diag)
+        if (resp?.headers.get('x-sin-filas') !== '1') {
+          await db.uploadChunk.deleteMany({ where: { fileId } })
+        }
       }
+      return resp
     }
 
     // ---------- MODO 1: archivo completo (multipart, sin cambios) ----------
@@ -188,7 +197,7 @@ export async function POST(req: NextRequest) {
     }
 
     const buf = Buffer.from(await file.arrayBuffer())
-    return await procesarBuffer(tipo as TipoCarga, buf, file.name)
+    return await procesarBuffer(tipo as TipoCarga, buf, file.name, `mp-${Date.now()}`)
   } catch (e) {
     console.error('upload error', e)
     return NextResponse.json({ error: e instanceof Error ? e.message : 'error procesando el archivo' }, { status: 500 })

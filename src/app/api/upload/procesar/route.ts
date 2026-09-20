@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { db } from '@/lib/db'
 import { filasDelWorkbook } from '@/lib/xlsx'
+import { respuestaSinFilas, respuestaLecturaFallida } from '@/lib/diag'
 import { autoMapPicking, mapPicking, PickingMapping } from '@/lib/ingest'
 import { guardarTanda, insertarTandaPicking, PickingMapeada, tamTandaFilas } from '@/lib/stage'
 
@@ -110,16 +111,17 @@ async function pasoParseo(fileId: string, nombre: string) {
   try {
     // dense: celdas en arrays compactos — imprescindible para archivos grandes
     wb = XLSX.read(buf, { type: 'buffer', cellDates: true, dense: true })
-  } catch {
-    await db.uploadChunk.deleteMany({ where: { fileId } })
-    return NextResponse.json({ error: 'no se pudo leer el archivo (¿es un Excel/CSV válido?)' }, { status: 400 })
+  } catch (e) {
+    // conservamos las partes para el diagnóstico remoto (/api/upload/diag)
+    return await respuestaLecturaFallida(buf, fileId, nombre, e)
   }
 
   const it = filasDelWorkbook(wb)
   const primera = it.next()
   if (primera.done || !primera.value || !Object.keys(primera.value).length) {
-    await db.uploadChunk.deleteMany({ where: { fileId } })
-    return NextResponse.json({ error: 'el archivo no tiene filas legibles' }, { status: 400 })
+    // NO borramos las partes: quedan para analizarlas a distancia
+    // (/api/upload/diag lista el diagnóstico y puede descargar los bytes)
+    return await respuestaSinFilas(buf, wb, fileId, nombre)
   }
 
   // auto-detección de columnas una sola vez con la primera fila (mismo archivo = mismas columnas)

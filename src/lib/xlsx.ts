@@ -127,6 +127,42 @@ function* filasDeHojaDensa(
       conValor = true
     }
     if (!conValor) continue // fila totalmente vacía: igual que sheet_to_json (blankrows: false)
+    if (!Object.keys(obj).length) continue // celdas con valor pero bajo encabezados vacíos: no aporta nada y haría fallar la primera-fila
+    yield obj
+  }
+}
+
+// Variante para hojas guardadas estilo SPARSE (claves "A1", "B2", ...): arma
+// cada fila leyendo celdas por dirección dentro del rango del !ref. Cubre
+// workbooks que no quedan en modo denso (otras versiones/formatos de SheetJS).
+function* filasDeHojaPorCeldas(
+  sheet: XLSX.WorkSheet,
+  rango: { s: { r: number; c: number }; e: { r: number; c: number } },
+): Generator<Record<string, unknown>> {
+  let headers: string[] | null = null
+  for (let r = rango.s.r; r <= rango.e.r; r++) {
+    let conValor = false
+    const fila: (XLSX.CellObject | undefined)[] = []
+    for (let c = rango.s.c; c <= rango.e.c; c++) {
+      const cel = sheet[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined
+      if (cel && cel.v != null) {
+        fila[c - rango.s.c] = cel
+        conValor = true
+      }
+    }
+    if (!conValor) continue
+    if (!headers) {
+      headers = fila.map((c) => (c && c.v != null ? String(c.v).trim() : ''))
+      continue
+    }
+    const obj: Record<string, unknown> = {}
+    for (let c = 0; c < fila.length; c++) {
+      const cel = fila[c]
+      if (!cel || cel.v == null) continue
+      const h = headers[c]
+      if (h) obj[h] = cel.v
+    }
+    if (!Object.keys(obj).length) continue
     yield obj
   }
 }
@@ -142,6 +178,20 @@ export function* filasDelWorkbook(wb: XLSX.WorkBook): Generator<Record<string, u
     }
     if (!sheet['!ref']) continue
     const rango = XLSX.utils.decode_range(sheet['!ref'])
+    // Dos estilos posibles de hoja sin '!data':
+    //  - denso viejo (SheetJS 0.18.5): filas bajo claves numéricas "0", "1"...
+    //  - sparse clásico: celdas bajo claves "A1", "B2"...
+    // Detectamos el estilo con las claves reales de la hoja; el fallback por
+    // direcciones cubre el caso que antes devolvía cero filas.
+    let usaDirecciones = false
+    for (const k of Object.keys(sheet)) {
+      if (k.charCodeAt(0) === 33 /* '!' */) continue
+      if (/^[A-Z]{1,3}[0-9]+$/.test(k)) { usaDirecciones = true; break }
+    }
+    if (usaDirecciones) {
+      yield* filasDeHojaPorCeldas(sheet, rango)
+      continue
+    }
     yield* filasDeHojaDensa(
       rango.e.r + 1,
       (r) => sheet[String(r)] as FilaDensa | undefined,
