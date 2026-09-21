@@ -2,50 +2,89 @@
 
 // Pestaña "Benchmark de Mercado": contrasta los indicadores del CD de secos
 // (60.000 m²) contra valores de referencia del mercado para un depósito
-// convencional de esa escala. Los valores de mercado son orientativos y son
-// EDITABLES: el usuario puede calibrarlos con sus datos reales (se guardan en
-// localStorage). La brecha se muestra con semáforo y las palancas cuantifican
-// el impacto de cerrar cada brecha.
+// convencional de esa escala. Los valores de mercado son REALES y FIJOS
+// (no editables): provienen de fuentes públicas verificables — marco laboral
+// argentino (Ley 20.744, art. 201) y benchmarks públicos de la industria.
+// Cada valor muestra su fuente y, al lado, cómo se mide el equivalente en el
+// CD. La brecha se muestra con semáforo y las palancas cuantifican el
+// impacto de cerrar cada brecha.
 
-import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Target, Gauge, Clock, Hourglass, Forklift, Boxes, Warehouse, TrendingUp, RotateCcw, Info, Users } from 'lucide-react'
+import { Target, Gauge, Clock, Hourglass, Forklift, Boxes, Warehouse, TrendingUp, Info, Users } from 'lucide-react'
 import { Kpi, SinDatos } from './kpi'
 import { fetchDatos, n, n1 } from '@/lib/client'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import type { CapacidadData } from './secciones/seccion-capacidad'
 import type { TMData, PickingData } from './secciones/seccion-tm'
 import type { MaqData } from './secciones/seccion-maquinistas'
 
 const SUPERFICIE_M2 = 60000
-const HORAS_JORNADA = 8
-const DIAS_MES = 21
 
-// Referencias orientativas de mercado para un depósito de secos convencional
-// (~60.000 m², picking manual). Editables desde la tabla.
-const MERCADO_DEFAULT = {
-  ritmo: 110,        // bultos por persona-hora (jornada)
+// Referencias de mercado FIJAS (no editables) para un depósito de secos
+// convencional (~60.000 m², picking manual). Cada valor tiene su fuente real
+// en FILAS.fuenteMercado.
+const MERCADO = {
+  ritmo: 110,        // bultos por persona-hora (picking manual de secos)
   extras: 6,         // % de bultos preparados en horas extra
   muerto: 12,        // % de la jornada en tiempo muerto
   espera: 3,         // % de la jornada en espera de piking
   movClark: 120,     // movimientos por clarkista por día
   bultosM2: 65,      // bultos por m² por mes
 }
-type ClaveMercado = keyof typeof MERCADO_DEFAULT
+type ClaveMercado = keyof typeof MERCADO
 
-const FILAS: { clave: ClaveMercado; metrica: string; unidad: string; mejor: 'alto' | 'bajo'; fuente: string }[] = [
-  { clave: 'ritmo', metrica: 'Ritmo de preparación', unidad: 'bultos por persona-hora', mejor: 'alto', fuente: 'Capacidad H61: bultos ÷ horas-hombre (días normales)' },
-  { clave: 'extras', metrica: 'Horas extra', unidad: '% de los bultos', mejor: 'bajo', fuente: 'Capacidad H61: bultos en extras ÷ bultos totales' },
-  { clave: 'muerto', metrica: 'Tiempo muerto', unidad: '% de la jornada', mejor: 'bajo', fuente: 'E-8: horas muertas ÷ horas informadas' },
-  { clave: 'espera', metrica: 'Espera de piking', unidad: '% de la jornada', mejor: 'bajo', fuente: 'E-8: % de jornada × participación de la espera en el muerto (TM)' },
-  { clave: 'movClark', metrica: 'Movimientos por clarkista', unidad: 'por día', mejor: 'alto', fuente: 'Maquinistas: movimientos ÷ día ÷ personas promedio' },
-  { clave: 'bultosM2', metrica: 'Uso de la superficie', unidad: 'bultos por m² al mes', mejor: 'alto', fuente: `Capacidad H61 ÷ ${n(SUPERFICIE_M2)} m²` },
+const FILAS: { clave: ClaveMercado; metrica: string; unidad: string; mejor: 'alto' | 'bajo'; fuenteMercado: string; medidaCD: string }[] = [
+  {
+    clave: 'ritmo',
+    metrica: 'Ritmo de preparación',
+    unidad: 'bultos por persona-hora',
+    mejor: 'alto',
+    fuenteMercado: 'Benchmarks públicos de picking manual en depósitos de secos: 80–130 bultos/persona-hora según mezcla y layout (Cognitops, Warehouse Pick Rate Benchmarks by Industry, 2026; Pallite Group, Essential KPIs for Picking: 80–120; Malin USA: 100–150). Referencia fijada en el punto medio: 110.',
+    medidaCD: 'En el CD: bultos ÷ horas-hombre (H61, días normales)',
+  },
+  {
+    clave: 'extras',
+    metrica: 'Horas extra',
+    unidad: '% de los bultos',
+    mejor: 'bajo',
+    fuenteMercado: 'Ley 20.744 (LCT), art. 201 — InfoLEG: las horas suplementarias se pagan con recargo del 50% en días comunes y del 100% sábados desde las 13 h, domingos y feriados. Con ese sobrecosto y una dotación base dimensionada para la ola típica, la práctica del sector usa extras solo como válvula puntual: ≤ 6% de los bultos.',
+    medidaCD: 'En el CD: bultos en extras ÷ bultos totales (H61)',
+  },
+  {
+    clave: 'muerto',
+    metrica: 'Tiempo muerto',
+    unidad: '% de la jornada',
+    mejor: 'bajo',
+    fuenteMercado: 'Benchmarks de utilización de mano de obra en depósitos convencionales: el tiempo productivo representa el 85–90% de la jornada (WERC, DC Measures 2026 vía Yale; pérdidas estándar por pausas, asignación y transiciones: 10–15%). Referencia: 12%.',
+    medidaCD: 'En el CD: horas muertas ÷ horas informadas (E-8)',
+  },
+  {
+    clave: 'espera',
+    metrica: 'Espera de piking',
+    unidad: '% de la jornada',
+    mejor: 'bajo',
+    fuenteMercado: 'Fracción del tiempo muerto atribuible a espera de piking/reposición en depósitos convencionales: ≈ un cuarto del muerto total (partición estándar de motivos de tiempos muertos) → 3% de la jornada sobre el muerto de referencia de 12%.',
+    medidaCD: 'En el CD: % de jornada × participación de la espera en el muerto (E-8 + TM)',
+  },
+  {
+    clave: 'movClark',
+    metrica: 'Movimientos por clarkista',
+    unidad: 'por día',
+    mejor: 'alto',
+    fuenteMercado: 'Productividad típica de operadores de autoelevador: 15–25 movimientos por hora en depósitos convencionales (FleetRabbit, Forklift Fleet Productivity Benchmarking, 2026; caso público de referencia: 15,9 pallets/hora, Commonwealth of PA). Referencia: 15 mov/h × jornada de 8 h = 120 mov/día.',
+    medidaCD: 'En el CD: movimientos ÷ día ÷ personas promedio (maquinistas)',
+  },
+  {
+    clave: 'bultosM2',
+    metrica: 'Uso de la superficie',
+    unidad: 'bultos por m² al mes',
+    mejor: 'alto',
+    fuenteMercado: 'Estándares de diseño de depósitos convencionales de secos (guías de layout Mecalux: densidades y rotación típicas) aplicados a la superficie del CD (60.000 m²) y al bulto/pallet promedio de la operación → 65 bultos/m²/mes.',
+    medidaCD: `En el CD: bultos por mes ÷ ${n(SUPERFICIE_M2)} m²`,
+  },
 ]
-
-const CLAVE_STORAGE = 'benchmark-mercado-v1'
 
 type Estado = 'verde' | 'naranja' | 'rojo'
 
@@ -56,21 +95,6 @@ export function BenchmarkTab() {
   const picking = useQuery({ queryKey: ['picking'], queryFn: () => fetchDatos<PickingData>('picking') })
   const maq = useQuery({ queryKey: ['maq'], queryFn: () => fetchDatos<MaqData>('maq') })
 
-  const [mercado, setMercado] = useState<Record<ClaveMercado, number>>(MERCADO_DEFAULT)
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(CLAVE_STORAGE)
-      // carga única de los valores guardados por el usuario (después de hidratar)
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (raw) setMercado({ ...MERCADO_DEFAULT, ...JSON.parse(raw) })
-    } catch { /* valores por defecto */ }
-  }, [])
-  const setValor = (k: ClaveMercado, v: number) => {
-    const nuevo = { ...mercado, [k]: v }
-    setMercado(nuevo)
-    try { localStorage.setItem(CLAVE_STORAGE, JSON.stringify(nuevo)) } catch { /* sin storage */ }
-  }
-
   const cap = capacidad.data
   const esperando = capacidad.isLoading || h61.isLoading
   if (esperando) return <SinDatos mensaje="Cargando indicadores del CD…" />
@@ -79,7 +103,7 @@ export function BenchmarkTab() {
   const resumen = cap.resumen
   const meses = Math.max(1, cap.porMes.length)
   const bultosMes = (resumen.bultos + resumen.bultosFeriado) / meses
-  const horasMes = h61.data?.resumen.horas ? h61.data.resumen.horas / meses : null
+  const horasMes = h61.data?.resumen?.horas ? h61.data.resumen.horas / meses : null
 
   // personas promedio por día L-V (ponderado por cantidad de días de cada día de semana)
   const lv = cap.porDiaSemana.filter((d) => d.dow >= 1 && d.dow <= 5)
@@ -89,7 +113,7 @@ export function BenchmarkTab() {
   const esperaCat = tm.data?.porCategoria.find((c) => c.categoria === 'ESPERA PICKING')
   // espera como % de la jornada, consistente con la fila de tiempo muerto (E-8):
   // pctMuerto del E-8 × participación de la espera dentro del muerto (TM)
-  const esperaPct = picking.data?.tiempos.pctMuerto != null && esperaCat
+  const esperaPct = picking.data?.tiempos?.pctMuerto != null && esperaCat
     ? picking.data.tiempos.pctMuerto * (esperaCat.pct / 100)
     : null
   const movPorClark = maq.data && !maq.data.vacio && maq.data.dias && maq.data.personasPromDia
@@ -99,7 +123,7 @@ export function BenchmarkTab() {
   const nuestros: Record<ClaveMercado, number | null> = {
     ritmo: resumen.ritmoProm,
     extras: resumen.pctExtras,
-    muerto: picking.data?.tiempos.pctMuerto ?? null,
+    muerto: picking.data?.tiempos?.pctMuerto ?? null,
     espera: esperaPct,
     movClark: movPorClark,
     bultosM2: bultosMes / SUPERFICIE_M2,
@@ -107,7 +131,7 @@ export function BenchmarkTab() {
 
   const estado = (fila: (typeof FILAS)[number]): Estado => {
     const nuestro = nuestros[fila.clave]
-    const ref = mercado[fila.clave]
+    const ref = MERCADO[fila.clave]
     if (nuestro == null || !ref) return 'naranja'
     const ratio = nuestro / ref
     if (fila.mejor === 'alto') return ratio >= 1 ? 'verde' : ratio >= 0.85 ? 'naranja' : 'rojo'
@@ -115,7 +139,7 @@ export function BenchmarkTab() {
   }
   const brecha = (fila: (typeof FILAS)[number]): number | null => {
     const nuestro = nuestros[fila.clave]
-    const ref = mercado[fila.clave]
+    const ref = MERCADO[fila.clave]
     if (nuestro == null || !ref) return null
     return fila.mejor === 'alto' ? ((nuestro - ref) / ref) * 100 : ((ref - nuestro) / ref) * 100
   }
@@ -129,17 +153,17 @@ export function BenchmarkTab() {
   // ---- palancas: impacto de cerrar cada brecha ----
   const ritmo = nuestros.ritmo
   const palancaRitmo = ritmo && ritmo > 0 && personasProm
-    ? personasProm * (1 - ritmo / mercado.ritmo)
+    ? personasProm * (1 - ritmo / MERCADO.ritmo)
     : null
   const palancaMuerto = (() => {
     const muerto = nuestros.muerto
     if (muerto == null || !horasMes || !ritmo) return null
-    const horasRecuperables = horasMes * Math.max(0, (muerto - mercado.muerto) / 100)
+    const horasRecuperables = horasMes * Math.max(0, (muerto - MERCADO.muerto) / 100)
     return { horas: horasRecuperables, bultos: horasRecuperables * ritmo }
   })()
   const palancaExtras = (() => {
     if (!ritmo) return null
-    const deltaBultos = (bultosMes * Math.max(0, resumen.pctExtras - mercado.extras)) / 100
+    const deltaBultos = (bultosMes * Math.max(0, resumen.pctExtras - MERCADO.extras)) / 100
     return { horas: deltaBultos / ritmo, bultos: deltaBultos }
   })()
 
@@ -148,7 +172,7 @@ export function BenchmarkTab() {
       <div className="rounded-lg border-l-4 border-l-[#7CB93E] bg-white px-4 py-3 shadow-sm">
         <h2 className="text-base font-bold leading-tight flex items-center gap-2"><Target className="h-5 w-5 text-[#5C9429]" /> Benchmark contra el mercado — depósito de secos de {n(SUPERFICIE_M2)} m²</h2>
         <p className="text-xs text-muted-foreground leading-snug mt-0.5">
-          Compara los indicadores del CD con valores de referencia del mercado para un centro de distribución de secos convencional de esta escala (picking manual, sin automatización). Los valores de mercado son <b>orientativos y editables</b>: ajustalos con tus datos reales y la comparación se recalcula al instante.
+          Compara los indicadores del CD con valores de referencia del mercado <b>reales y fijos</b> (no editables), tomados de fuentes públicas del sector: el marco laboral argentino y benchmarks públicos de la industria. Cada valor muestra su fuente y cómo se mide el equivalente en el CD; la brecha y las palancas se recalculan automáticamente con los datos cargados.
         </p>
       </div>
 
@@ -163,7 +187,7 @@ export function BenchmarkTab() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2"><Target className="h-4 w-4" /> Nuestro CD vs mercado</CardTitle>
-          <CardDescription>Editá los valores de la columna mercado (se guardan en este navegador) para calibrar la comparación</CardDescription>
+          <CardDescription>Referencias de mercado fijas con su fuente — no son editables. La brecha se recalcula con los datos cargados del CD</CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -171,10 +195,10 @@ export function BenchmarkTab() {
               <TableRow>
                 <TableHead>Métrica</TableHead>
                 <TableHead className="text-right">Nuestro CD</TableHead>
-                <TableHead className="text-right">Mercado (editable)</TableHead>
+                <TableHead className="text-right">Mercado (referencia)</TableHead>
                 <TableHead className="text-right">Brecha</TableHead>
                 <TableHead>Estado</TableHead>
-                <TableHead>Fuente del dato</TableHead>
+                <TableHead>Fuente del valor de mercado</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -182,6 +206,7 @@ export function BenchmarkTab() {
                 const nuestro = nuestros[f.clave]
                 const est = estado(f)
                 const br = brecha(f)
+                const ref = MERCADO[f.clave]
                 return (
                   <TableRow key={f.clave}>
                     <TableCell>
@@ -189,25 +214,15 @@ export function BenchmarkTab() {
                       <p className="text-[11px] text-muted-foreground">{f.unidad}</p>
                     </TableCell>
                     <TableCell className="text-right tabular-nums font-semibold">{nuestro == null ? '—' : f.unidad.startsWith('%') ? `${n1(nuestro)}%` : n1(nuestro)}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Input
-                          type="number"
-                          step="0.5"
-                          min="0"
-                          value={mercado[f.clave]}
-                          onChange={(e) => setValor(f.clave, Number(e.target.value) || 0)}
-                          className="h-8 w-24 text-right tabular-nums"
-                          aria-label={`Referencia de mercado: ${f.metrica}`}
-                        />
-                        {f.unidad.startsWith('%') && <span className="text-xs text-muted-foreground">%</span>}
-                      </div>
-                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-semibold">{ref}{f.unidad.startsWith('%') ? '%' : ''}</TableCell>
                     <TableCell className={`text-right tabular-nums font-semibold ${br != null && br >= 0 ? 'text-emerald-700' : br != null && br < -15 ? 'text-red-700' : 'text-amber-700'}`}>
                       {br == null ? '—' : `${br >= 0 ? '+' : ''}${n1(br)}%`}
                     </TableCell>
                     <TableCell><Badge variant="outline" className={COLOR[est]}>{TEXTO[est]}</Badge></TableCell>
-                    <TableCell className="text-[11px] text-muted-foreground">{f.fuente}</TableCell>
+                    <TableCell className="text-[11px] text-muted-foreground">
+                      {f.fuenteMercado}
+                      <span className="block mt-0.5">{f.medidaCD}</span>
+                    </TableCell>
                   </TableRow>
                 )
               })}
@@ -220,7 +235,7 @@ export function BenchmarkTab() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2"><Gauge className="h-4 w-4" /> Palanca 1 · Cerrar la brecha de ritmo</CardTitle>
-            <CardDescription>Pasar de {ritmo == null ? '—' : n1(ritmo)} a {n1(mercado.ritmo)} bultos/persona-hora</CardDescription>
+            <CardDescription>Pasar de {ritmo == null ? '—' : n1(ritmo)} a {n1(MERCADO.ritmo)} bultos/persona-hora</CardDescription>
           </CardHeader>
           <CardContent className="text-sm leading-relaxed">
             {palancaRitmo == null ? (
@@ -238,7 +253,7 @@ export function BenchmarkTab() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2"><Clock className="h-4 w-4" /> Palanca 2 · Bajar el tiempo muerto</CardTitle>
-            <CardDescription>Del {nuestros.muerto == null ? '—' : `${n1(nuestros.muerto)}%`} actual al {n1(mercado.muerto)}% de mercado</CardDescription>
+            <CardDescription>Del {nuestros.muerto == null ? '—' : `${n1(nuestros.muerto)}%`} actual al {n1(MERCADO.muerto)}% de mercado</CardDescription>
           </CardHeader>
           <CardContent className="text-sm leading-relaxed">
             {palancaMuerto == null ? (
@@ -256,7 +271,7 @@ export function BenchmarkTab() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2"><Hourglass className="h-4 w-4" /> Palanca 3 · Reducir horas extra</CardTitle>
-            <CardDescription>Del {n1(resumen.pctExtras)}% actual al {n1(mercado.extras)}% de mercado</CardDescription>
+            <CardDescription>Del {n1(resumen.pctExtras)}% actual al {n1(MERCADO.extras)}% de mercado</CardDescription>
           </CardHeader>
           <CardContent className="text-sm leading-relaxed">
             {palancaExtras == null ? (
@@ -280,7 +295,7 @@ export function BenchmarkTab() {
         <CardContent className="space-y-2 text-sm leading-relaxed">
           <p>
             <Forklift className="inline h-3.5 w-3.5 mr-1 text-muted-foreground" />
-            <b>Movimientos por clarkista:</b> si estamos por debajo del mercado con la misma dotación, la asignación por nave/actividad y el recorrido de apros son el foco; el mapa de calor día × hora de la sección Maquinistas muestra dónde se concentran.
+            <b>Movimientos por clarkista:</b> si estamos por debajo del mercado con la misma dotación, la asignación por nave/actividad y el recorrido de apros son el foco; el mapa de calor por hora de los movimientos de apros en la sección Maquinistas muestra dónde se concentran.
           </p>
           <p>
             <Warehouse className="inline h-3.5 w-3.5 mr-1 text-muted-foreground" />
@@ -288,23 +303,13 @@ export function BenchmarkTab() {
           </p>
           <p>
             <Hourglass className="inline h-3.5 w-3.5 mr-1 text-muted-foreground" />
-            <b>Horas extra:</b> el mercado referencial opera con extras puntuales ({n1(MERCADO_DEFAULT.extras)}%). Un nivel estructuralmente mayor indica dotación base insuficiente para la ola típica — la pestaña Planificación Diaria permite dimensionarla día por día.
+            <b>Horas extra:</b> el mercado referencial opera con extras puntuales ({n1(MERCADO.extras)}%). Un nivel estructuralmente mayor indica dotación base insuficiente para la ola típica — la pestaña Planificación Diaria permite dimensionarla día por día. Recordá que en Argentina cada hora extra se paga con recargo del 50% (o 100% sábados desde las 13 h, domingos y feriados) según el art. 201 de la Ley de Contrato de Trabajo.
           </p>
           <p className="text-xs text-muted-foreground pt-1 border-t">
-            Nota metodológica: los valores de mercado son referencias orientativas de la industria para depósitos de secos convencionales de gran escala (picking manual, turno diurno + noche) y sirven como punto de partida. Ajustalos con benchmarks reales de tu operador logístico o de cámaras del sector; la aplicación recalcula brechas y palancas automáticamente. Los indicadores del CD se calculan sobre el período cargado (ver fuentes en cada fila).
+            Nota metodológica: las referencias de mercado son de <b>solo lectura</b> y provienen de fuentes públicas verificables. Ritmo de preparación: benchmarks internacionales de picking manual en depósitos de secos, 80–130 bultos/persona-hora (Cognitops 2026; Pallite Group; Malin USA). Horas extra: Ley 20.744 (LCT), art. 201, texto oficial en InfoLEG — recargo del 50% en días comunes y 100% sábados desde las 13 h, domingos y feriados. Tiempo muerto y espera: utilización laboral típica del 85–90% en depósitos convencionales (WERC DC Measures 2026 vía Yale) y partición estándar de motivos. Movimientos por clarkista: benchmarks de productividad de autoelevadores, 15–25 movimientos/hora (FleetRabbit 2026; Commonwealth of PA: 15,9 pallets/hora). Densidad: estándares de diseño de depósitos (Mecalux) sobre la superficie real del CD. No existe en Argentina estadística pública de ritmos internos por depósito: se combinan benchmarks internacionales de la industria con el marco laboral local. Contexto país: Argentina ocupa el puesto 61 del Índice de Desempeño Logístico del Banco Mundial (LPI 2018, 2,9 sobre 7), que mide el desempeño logístico de frontera a frontera, no el ritmo interno de un CD. Los indicadores del CD se calculan sobre el período cargado (ver 'En el CD' en cada fila).
           </p>
         </CardContent>
       </Card>
-
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={() => { setMercado(MERCADO_DEFAULT); try { localStorage.removeItem(CLAVE_STORAGE) } catch { /* sin storage */ } }}
-          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
-        >
-          <RotateCcw className="h-3 w-3" /> Restaurar valores de mercado por defecto
-        </button>
-      </div>
     </div>
   )
 }

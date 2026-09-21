@@ -2,8 +2,9 @@
 
 // Sección "Maquinistas (clarkistas)" del Resumen: personas por actividad,
 // personas por tarea y actividad (apros vs homogéneos), distribución por turno,
-// mapa de calor de apros por actividad, mapa de calor día × hora de movimientos,
-// movimientos por horario y el CRUCE con los tiempos muertos:
+// mapa de calor de apros por actividad, mapa de calor POR HORA de movimientos de
+// apros (sin división por día de la semana), movimientos por horario y el CRUCE
+// con los tiempos muertos:
 // ¿los movimientos de apros coinciden con la espera de piking?
 
 import { useMemo } from 'react'
@@ -97,9 +98,10 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
   const calorMax = Math.max(1, ...celdasCalor.map((c) => c.mov))
   const calorMap = new Map(celdasCalor.map((c) => [`${c.mes}|${c.actividad}`, c]))
 
-  // mapa de calor día × hora de los movimientos de clarks: filas de horas con algún dato
-  const filasCalorHora = (data.calorHora?.horas ?? []).filter((f) => f.valores.some((v) => v != null))
-  const calorHoraMax = Math.max(1, ...filasCalorHora.flatMap((f) => f.valores.filter((v): v is number => v != null)))
+  // mapa de calor POR HORA de los movimientos de apros: solo horas con datos,
+  // sin división por día de la semana (el perfil horario es lo que importa)
+  const horasApros = porHoraApros.filter((p) => p.total > 0)
+  const aprosHoraMax = Math.max(1, ...horasApros.map((p) => p.total))
 
   if (data.vacio) return <SinDatos mensaje="Cargá el archivo H61 de maquinistas (clarkistas) para ver esta sección." />
 
@@ -264,36 +266,32 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
         </CardContent>
       </Card>
 
-      {/* Mapa de calor día x hora de los movimientos de clarks */}
-      {filasCalorHora.length > 0 && (
+      {/* Mapa de calor POR HORA: movimientos de apros (sin división por día) */}
+      {horasApros.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Mapa de calor día de la semana × hora — movimientos de clarks</CardTitle>
-            <CardDescription>Cada celda muestra los movimientos promedio de clarkistas en ese día y esa hora (más oscuro = más movimiento)</CardDescription>
+            <CardTitle className="text-base">Mapa de calor por hora — movimientos de apros</CardTitle>
+            <CardDescription>Cada celda muestra los movimientos promedio por día de los clarks que hacen apros en esa hora (más oscuro = más movimiento). Solo apros — es la tarea que atiende la espera de piking — y sin división por día: el perfil horario es lo que guía la dotación</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="overflow-x-auto max-h-[520px]">
+            <div className="overflow-x-auto">
               <table className="border-collapse text-[10px]">
                 <thead>
                   <tr>
-                    <th className="border p-1.5 text-left bg-muted/40 sticky top-0 bg-background">Hora</th>
-                    {data.calorHora?.dias.map((d) => <th key={d} className="border p-1.5 bg-muted/40 sticky top-0">{d}</th>)}
+                    {horasApros.map((p) => <th key={p.hora} className="border p-1 bg-muted/40 font-medium whitespace-nowrap">{p.etiqueta}</th>)}
                   </tr>
                 </thead>
                 <tbody>
-                  {filasCalorHora.map((f) => (
-                    <tr key={f.hora}>
-                      <td className="border p-1.5 font-medium whitespace-nowrap">{f.etiqueta}</td>
-                      {f.valores.map((v, i) => {
-                        const inten = v != null ? v / calorHoraMax : 0
-                        return (
-                          <td key={i} className="border p-1.5 text-center tabular-nums" style={{ backgroundColor: v != null ? `rgba(124, 185, 62, ${0.12 + 0.78 * inten})` : undefined, color: inten > 0.55 ? '#fff' : undefined }}>
-                            {v != null ? n1(v) : '—'}
-                          </td>
-                        )
-                      })}
-                    </tr>
-                  ))}
+                  <tr>
+                    {horasApros.map((p) => {
+                      const inten = p.total / aprosHoraMax
+                      return (
+                        <td key={p.hora} className="border p-1 text-center tabular-nums min-w-[44px]" style={{ backgroundColor: `rgba(124, 185, 62, ${0.12 + 0.78 * inten})`, color: inten > 0.55 ? '#fff' : undefined }}>
+                          {n1(p.total)}
+                        </td>
+                      )
+                    })}
+                  </tr>
                 </tbody>
               </table>
             </div>
