@@ -3,6 +3,7 @@
 import { db } from '@/lib/db'
 import { getFeriadosMap } from './feriados'
 import { unificarCategoria } from './normaliza'
+import { cachedAgg } from './cache'
 
 export interface Filtros {
   from?: string
@@ -20,7 +21,7 @@ function rango(f: Filtros): { gte?: Date; lte?: Date } {
 const dia = (d: Date) => d.toISOString().slice(0, 10)
 
 // ============ RESUMEN EJECUTIVO ============
-export async function getResumen() {
+async function _resumen() {
   const [olaCount, h61Count, tmCount, pickCount, batches] = await Promise.all([
     db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _avg: { ola: true, total: true } }),
     db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true }, _sum: { bultos: true, horasActivas: true, extras: true, bultosExtras: true } }),
@@ -58,7 +59,7 @@ export async function getResumen() {
 }
 
 // ============ OLA / PLANIFICACION ============
-export async function getPlanificacion(f: Filtros) {
+async function _planificacion(f: Filtros) {
   const where = { fecha: rango(f) }
   const [ola, h61] = await Promise.all([
     db.olaDia.findMany({ where, orderBy: { fecha: 'asc' } }),
@@ -146,7 +147,7 @@ export async function getPlanificacion(f: Filtros) {
 // mensual/semanal/diario sean consistentes entre si.
 const DIAS_SEM = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 
-export async function getOla(f: Filtros) {
+async function _ola(f: Filtros) {
   const rows = await db.olaDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } })
   const serie = rows.map((r) => {
     const k = dia(r.fecha)
@@ -170,7 +171,7 @@ export async function getOla(f: Filtros) {
 }
 
 // ============ PRODUCTIVIDAD H61 ============
-export async function getH61(f: Filtros) {
+async function _h61(f: Filtros) {
   const where: Record<string, unknown> = { fecha: rango(f) }
   if (f.turno) where.turno = f.turno
   if (f.funcion) where.funcion = f.funcion
@@ -327,7 +328,7 @@ function mediana(vals: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
 }
 
-export async function getCapacidad(f: Filtros) {
+async function _capacidad(f: Filtros) {
   const [ops, oh, th, act] = await Promise.all([
     db.h61OpDia.findMany({ where: { fecha: rango(f) }, orderBy: { fecha: 'asc' } }),
     db.h61OpHora.findMany({ where: { fecha: rango(f) } }),
@@ -820,7 +821,7 @@ export async function getCapacidad(f: Filtros) {
 }
 
 // ============ TIEMPOS MUERTOS ============
-export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
+async function _tm(f: Filtros & { incluirBajas?: boolean }) {
   const where: Record<string, unknown> = { fecha: rango(f) }
   if (!f.incluirBajas) where.OR = [{ estado: null }, { estado: { not: 'B' } }]
   if (f.turno) where.turno = f.turno
@@ -934,7 +935,7 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
 //   traslados      = neto - super neto (ciclo de movimiento entre ubicaciones)
 const UMBRAL_MUERTO_PICKING = 2
 
-export async function getPicking(f: Filtros) {
+async function _picking(f: Filtros) {
   const where = { fecha: rango(f) }
   const count = await db.pickingEvento.count({ where })
   if (!count) return { registros: 0, vacio: true as const }
@@ -1351,7 +1352,7 @@ const r2 = (x: number) => Math.round(x * 100) / 100
 
 // ============ MAQUINISTAS (H61 clarkistas: personas por actividad y nave) ============
 // Foco: cuantas personas realizan cada actividad y a que naves (CIRCUITO) estan asignadas.
-export async function getMaquinistas(f: Filtros) {
+async function _maquinistas(f: Filtros) {
   const r = rango(f)
   const [rows, act, nav, fuentes] = await Promise.all([
     db.maqOpNave.findMany({ where: { fecha: r }, orderBy: { fecha: 'asc' } }),
@@ -1866,7 +1867,7 @@ function porMesNaveFiltrado(mesNav: Map<string, { dias: number; ops: number }>, 
 // Reune en un solo lugar todos los parametros de productividad medidos:
 // demanda (ola + pendiente), ritmos H61 (global / por turno / base / extras) y
 // productividades del E-8, mas el perfil horario promedio para planificar por hora.
-export async function getPlanificador() {
+async function _planificador() {
   const [olaRows, ops, th, pickAgg, e8Rows, oh] = await Promise.all([
     db.olaDia.findMany({ orderBy: { fecha: 'asc' } }),
     db.h61OpDia.findMany({ orderBy: { fecha: 'asc' } }),
@@ -2113,7 +2114,7 @@ export async function getPlanificador() {
 }
 
 // ============ STATUS ============
-export async function getStatus() {
+async function _status() {
   const [ola, h61, tm, pk, mq, batches] = await Promise.all([
     db.olaDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
     db.h61OpDia.aggregate({ _count: true, _min: { fecha: true }, _max: { fecha: true } }),
@@ -2130,4 +2131,42 @@ export async function getStatus() {
     maq: { registros: mq._count, desde: mq._min.fecha, hasta: mq._max.fecha },
     batches: batches.map((b) => ({ ...b, createdAt: b.createdAt.toISOString() })),
   }
+}
+
+// ============ EXPORTS CACHEADOS ============
+// Cada modulo se sirve del cache de agregados (ver src/lib/cache.ts): la
+// primera peticion consulta Neon, el resto sale del cache hasta que cambie la
+// version de datos (subida o borrado de informacion). Reduce la transferencia
+// de Neon de ~250k filas por vista a un par de queries minusculas de version.
+const clave = (f: unknown) => JSON.stringify(f ?? {})
+
+export async function getResumen() {
+  return cachedAgg('resumen', '', _resumen)
+}
+export async function getPlanificacion(f: Filtros) {
+  return cachedAgg('planificacion', clave(f), () => _planificacion(f))
+}
+export async function getOla(f: Filtros) {
+  return cachedAgg('ola', clave(f), () => _ola(f))
+}
+export async function getH61(f: Filtros) {
+  return cachedAgg('h61', clave(f), () => _h61(f))
+}
+export async function getCapacidad(f: Filtros) {
+  return cachedAgg('capacidad', clave(f), () => _capacidad(f))
+}
+export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
+  return cachedAgg('tm', clave(f), () => _tm(f))
+}
+export async function getPicking(f: Filtros) {
+  return cachedAgg('picking', clave(f), () => _picking(f))
+}
+export async function getMaquinistas(f: Filtros) {
+  return cachedAgg('maq', clave(f), () => _maquinistas(f))
+}
+export async function getPlanificador() {
+  return cachedAgg('planificador', '', _planificador)
+}
+export async function getStatus() {
+  return cachedAgg('status', '', _status)
 }

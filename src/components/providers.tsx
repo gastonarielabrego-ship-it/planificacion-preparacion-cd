@@ -8,7 +8,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
     () =>
       new QueryClient({
         defaultOptions: {
-          queries: { staleTime: 60_000, retry: 1, refetchOnWindowFocus: false },
+          // staleTime alto: los datos del dashboard solo cambian cuando se sube
+          // informacion nueva (y el server ademas cachea los agregados). Con 10
+          // minutos evitamos re-consultas innecesarias al cambiar de pestana.
+          queries: { staleTime: 600_000, gcTime: 3_600_000, retry: 1, refetchOnWindowFocus: false },
         },
       }),
   )
