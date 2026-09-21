@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import PptxGenJS from 'pptxgenjs'
 import { LOGO_BASE64 } from '@/lib/logo'
 import { getOla, getCapacidad, getH61, getMaquinistas, getTM, getPicking, getPlanificador } from '@/lib/agg'
 
@@ -91,6 +90,7 @@ export async function GET() {
     ])
 
     const fechaHoy = new Date().toISOString().slice(0, 10)
+    const { default: PptxGenJS } = await import('pptxgenjs')
     const pptx = new PptxGenJS()
     pptx.defineLayout({ name: 'GG16x9', width: 13.33, height: 7.5 })
     pptx.layout = 'GG16x9'
@@ -360,6 +360,9 @@ export async function GET() {
     })
   } catch (e) {
     console.error('informe pptx error', e)
-    return NextResponse.json({ error: e instanceof Error ? e.message : 'error generando informe' }, { status: 500 })
+    return NextResponse.json({
+      error: e instanceof Error ? e.message : 'error generando informe',
+      stack: e instanceof Error ? e.stack?.split('\n').slice(0, 8).join(' | ') : String(e),
+    }, { status: 500 })
   }
 }
