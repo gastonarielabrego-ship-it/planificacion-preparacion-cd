@@ -12,7 +12,6 @@ import { n, n1, pct, fechaCorta, COLORES, GG_VERDE, GG_NARANJA, GG_GRIS } from '
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, Cell } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 
 const MESES_ABR = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -396,46 +395,6 @@ export function SeccionCapacidad({ data }: { data: CapacidadData }) {
               </ComposedChart>
             </ResponsiveContainer>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Detalle mensual compacto */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Detalle mensual</CardTitle>
-          <CardDescription>Ritmo = bultos por hora-hombre, solo días no feriados. La producción de feriados se lista aparte</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ScrollArea className="h-[320px] rounded-md border">
-            <Table>
-              <TableHeader className="sticky top-0 bg-background">
-                <TableRow>
-                  <TableHead>Mes</TableHead>
-                  <TableHead className="text-right">Días</TableHead>
-                  <TableHead className="text-right">Personas</TableHead>
-                  <TableHead className="text-right">Bultos sin extras</TableHead>
-                  <TableHead className="text-right">Bultos en extras</TableHead>
-                  <TableHead className="text-right">% extras</TableHead>
-                  <TableHead className="text-right">Ritmo prom.</TableHead>
-                  <TableHead className="text-right">Mediana días</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.porMes.map((m) => (
-                  <TableRow key={m.mes}>
-                    <TableCell className="font-medium">{etiquetaMes(m.mes)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{m.dias}</TableCell>
-                    <TableCell className="text-right tabular-nums">{m.personas}</TableCell>
-                    <TableCell className="text-right tabular-nums">{n(m.bultosBase)}</TableCell>
-                    <TableCell className="text-right tabular-nums text-amber-700">{n(m.bultosExtras)}</TableCell>
-                    <TableCell className="text-right tabular-nums font-semibold">{pct(m.pctExtras)}</TableCell>
-                    <TableCell className="text-right tabular-nums font-semibold">{n1(m.ritmoProm)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{n1(m.ritmoMediana)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </ScrollArea>
         </CardContent>
       </Card>
     </div>

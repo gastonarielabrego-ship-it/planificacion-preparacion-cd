@@ -1,14 +1,15 @@
 'use client'
 
 // Secciones "Tiempos muertos" (versión resumen: pareto de categorías unificadas,
-// espera de piking por nave, por turno y por hora — SIN evolución diaria, sin
-// motivos crudos y sin cruce de código por sistema) y "E-8" (tiempo muerto entre
-// piking: promedio, mediana, horario, calor día×turno, % de la jornada y naves).
+// espera de piking por nave y por turno — SIN evolución diaria, sin motivos
+// crudos, sin cruce de código por sistema y SIN gráfico por hora) y "E-8"
+// (tiempo muerto entre piking: promedio, mediana, calor día×turno, calor día×hora,
+// % de la jornada y naves). Todos los valores se muestran en HORAS.
 
 import { TriangleAlert, Timer, Warehouse, Boxes, CalendarClock } from 'lucide-react'
 import { Kpi, SinDatos } from '../kpi'
-import { n, n1, pct, horasHMin, COLORES, GG_VERDE, GG_NARANJA, GG_GRIS } from '@/lib/client'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, ComposedChart, Line, AreaChart, Area } from 'recharts'
+import { n, n1, pct, COLORES, GG_NARANJA, GG_GRIS } from '@/lib/client'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, ComposedChart, Line } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -23,6 +24,7 @@ export interface TMData {
   porTurno: { turno: string; nombre: string; minutos: number }[]
   porHora: { hora: number; etiqueta: string; minutos: number }[]
   porHoraEsperaPiking: { hora: number; etiqueta: string; minutos: number }[]
+  calorHora: { dias: string[]; horas: { hora: number; etiqueta: string; valores: (number | null)[] }[] }
   navesResumen: { minutos: number; naves: number; pasillos: number }
 }
 
@@ -39,13 +41,14 @@ export function SeccionTiemposMuertos({ data, horasH61 }: { data: TMData; horasH
     }, 0)
     return data.porCategoria.map((c, i) => ({ ...c, horas: +(c.minutos / 60).toFixed(1), acumulado: +acumulados[i].toFixed(1) }))
   })()
+  const porTurnoHoras = data.porTurno.map((t) => ({ ...t, horas: +(t.minutos / 60).toFixed(1) }))
 
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi titulo="Tiempo muerto total" valor={data.totalHoras} unidad="h" icono={TriangleAlert} tono="alerta" detalle={`${n(data.registros)} eventos informados`} />
         <Kpi titulo="% sobre horas de preparación" valor={horasH61 ? (data.totalMin / 60 / horasH61) * 100 : null} formato="porcentaje" icono={Timer} detalle="Horas muertas contra horas-hombre H61 del período" />
-        <Kpi titulo="Espera de piking" valor={espera ? horasHMin(espera.minutos) : '—'} formato="texto" icono={Warehouse} tono="atencion" detalle={`${pct(espera?.pct)} del tiempo muerto · motivo n° 1 del pareto`} />
+        <Kpi titulo="Espera de piking" valor={espera ? +(espera.minutos / 60).toFixed(1) : null} unidad={espera ? 'h' : undefined} formato="texto" icono={Warehouse} tono="atencion" detalle={`${pct(espera?.pct)} del tiempo muerto · motivo n° 1 del pareto`} />
         <Kpi titulo="Naves con espera de piking" valor={data.navesResumen.naves} icono={Boxes} detalle={`${data.navesResumen.pasillos} pasillos con ubicación puntual`} />
       </div>
 
@@ -85,7 +88,7 @@ export function SeccionTiemposMuertos({ data, horasH61 }: { data: TMData; horasH
                 <TableHeader className="sticky top-0 bg-background">
                   <TableRow>
                     <TableHead>Nave</TableHead>
-                    <TableHead className="text-right">Minutos</TableHead>
+                    <TableHead className="text-right">Horas</TableHead>
                     <TableHead className="text-right">Eventos</TableHead>
                     <TableHead>Pasillos con más espera</TableHead>
                   </TableRow>
@@ -94,12 +97,12 @@ export function SeccionTiemposMuertos({ data, horasH61 }: { data: TMData; horasH
                   {data.porNave.slice(0, 12).map((nv) => (
                     <TableRow key={nv.nave}>
                       <TableCell className="font-medium">{nv.nave}</TableCell>
-                      <TableCell className="text-right tabular-nums">{n(nv.minutos)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{n1(nv.minutos / 60)}</TableCell>
                       <TableCell className="text-right tabular-nums">{n(nv.registros)}</TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {nv.pasillos.slice(0, 4).map((p) => (
-                            <Badge key={p.pasillo} variant="secondary" className="text-[10px]">{p.pasillo}: {n(p.minutos)}′</Badge>
+                            <Badge key={p.pasillo} variant="secondary" className="text-[10px]">{p.pasillo}: {n1(p.minutos / 60)} h</Badge>
                           ))}
                         </div>
                       </TableCell>
@@ -121,40 +124,15 @@ export function SeccionTiemposMuertos({ data, horasH61 }: { data: TMData; horasH
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={data.porTurno} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+              <BarChart data={porTurnoHoras} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="nombre" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 60)}h`} />
-                <Tooltip formatter={(v: number) => horasHMin(v)} />
-                <Bar dataKey="minutos" name="Minutos muertos" radius={[3, 3, 0, 0]}>
-                  {data.porTurno.map((_, i) => <Cell key={i} fill={COLORES[i % COLORES.length]} />)}
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}h`} />
+                <Tooltip formatter={(v: number) => `${n1(v)} h`} />
+                <Bar dataKey="horas" name="Horas muertas" radius={[3, 3, 0, 0]}>
+                  {porTurnoHoras.map((_, i) => <Cell key={i} fill={COLORES[i % COLORES.length]} />)}
                 </Bar>
               </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Por hora del dia: SOLO espera de piking */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Espera de piking por hora del día</CardTitle>
-            <CardDescription>Cuándo se concentra la espera de piking a lo largo del día (cruce con movimientos de clark en la sección Maquinistas)</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <AreaChart data={data.porHoraEsperaPiking} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="gradEspera" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#dc2626" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#dc2626" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={2} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 60)}h`} />
-                <Tooltip formatter={(v: number) => horasHMin(v)} />
-                <Area dataKey="minutos" name="Espera de piking" stroke="#dc2626" strokeWidth={2} fill="url(#gradEspera)" dot={false} />
-              </AreaChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
@@ -183,19 +161,23 @@ export interface PickingData {
   productividad: { total: number | null; neta: number | null; superNeta: number | null }
 }
 
-export function SeccionE8({ data }: { data: PickingData }) {
+export function SeccionE8({ data, calorHora }: { data: PickingData; calorHora?: TMData['calorHora'] }) {
   if (data.vacio || !data.registros) return null
   const esResumen = data.grano === 'resumen'
 
   const prom = esResumen ? data.muertoBloques.promedio : data.gapPromedio
   const med = esResumen ? data.muertoBloques.mediana : data.gapMediana
   const heatMax = Math.max(1, ...(data.muertoHeat?.turnos.flatMap((t) => t.valores.filter((v): v is number => v != null)) ?? [1]))
+  // mapa de calor por hora (del módulo tiempos muertos): solo horas con algún dato
+  const filasCalorHora = (calorHora?.horas ?? []).filter((f) => f.valores.some((v) => v != null))
+  const calorHoraMax = Math.max(1, ...filasCalorHora.flatMap((f) => f.valores.filter((v): v is number => v != null)))
+  const muertoTurnoHoras = data.muertoPorTurno.map((t) => ({ ...t, horas: +(t.minutosMuerto / 60).toFixed(1) }))
 
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Kpi titulo="Tiempo muerto entre pickings — promedio" valor={prom == null ? '—' : n1(prom)} formato="texto" unidad={prom != null ? 'min' : undefined} icono={Timer} tono="atencion" detalle={esResumen ? 'Por bloque colaborador×día×turno' : 'Gap entre eventos consecutivos'} />
-        <Kpi titulo="Mediana" valor={med == null ? '—' : n1(med)} formato="texto" unidad={med != null ? 'min' : undefined} icono={CalendarClock} detalle="El caso típico, sin distorsión de extremos" />
+        <Kpi titulo="Tiempo muerto entre pickings — promedio" valor={prom == null ? '—' : n1(prom / 60)} formato="texto" unidad={prom != null ? 'h' : undefined} icono={Timer} tono="atencion" detalle={esResumen ? 'Por bloque colaborador×día×turno' : 'Gap entre eventos consecutivos'} />
+        <Kpi titulo="Mediana" valor={med == null ? '—' : n1(med / 60)} formato="texto" unidad={med != null ? 'h' : undefined} icono={CalendarClock} detalle="El caso típico, sin distorsión de extremos" />
         <Kpi titulo="% de la jornada" valor={data.tiempos.pctMuerto} formato="porcentaje" icono={TriangleAlert} detalle={`${n(data.tiempos.horasMuerto)} h muertas de ${n(data.tiempos.horasTotal)} h informadas`} />
         <Kpi titulo="Bultos y productividad" valor={data.bultos} unidad="bultos" icono={Boxes} detalle={data.productividad.neta ? `Productividad neta: ${n1(data.productividad.neta)} bultos/h` : undefined} />
       </div>
@@ -212,7 +194,7 @@ export function SeccionE8({ data }: { data: PickingData }) {
           {/* Mapa de calor dia x turno */}
           {data.muertoHeat && (
             <div>
-              <p className="text-sm font-medium mb-2">¿En qué horario se concentra? — mapa de calor día de la semana × turno (minutos muertos promedio)</p>
+              <p className="text-sm font-medium mb-2">¿En qué horario se concentra? — mapa de calor día de la semana × turno (horas muertas promedio por bloque)</p>
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-xs">
                   <thead>
@@ -229,6 +211,39 @@ export function SeccionE8({ data }: { data: PickingData }) {
                           const inten = v != null ? v / heatMax : 0
                           return (
                             <td key={i} className="border p-2 text-center tabular-nums" style={{ backgroundColor: v != null ? `rgba(240, 138, 0, ${0.12 + 0.75 * inten})` : undefined, color: inten > 0.55 ? '#fff' : undefined }}>
+                              {v != null ? `${n1(v / 60)} h` : '—'}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Mapa de calor dia x hora (fuente: tiempos muertos informados con hora) */}
+          {filasCalorHora.length > 0 && (
+            <div>
+              <p className="text-sm font-medium mb-2">Mapa de calor día de la semana × hora del día (horas muertas del período)</p>
+              <p className="text-xs text-muted-foreground mb-2">Cada celda suma las horas muertas informadas en ese día y esa hora a lo largo del período — más oscuro = más tiempo perdido</p>
+              <div className="overflow-x-auto max-h-[420px]">
+                <table className="w-full border-collapse text-[11px]">
+                  <thead>
+                    <tr>
+                      <th className="border p-1.5 text-left bg-muted/40 sticky top-0 bg-background">Hora</th>
+                      {calorHora?.dias.map((d) => <th key={d} className="border p-1.5 bg-muted/40 sticky top-0">{d}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filasCalorHora.map((f) => (
+                      <tr key={f.hora}>
+                        <td className="border p-1.5 font-medium whitespace-nowrap">{f.etiqueta}</td>
+                        {f.valores.map((v, i) => {
+                          const inten = v != null ? v / calorHoraMax : 0
+                          return (
+                            <td key={i} className="border p-1.5 text-center tabular-nums" style={{ backgroundColor: v != null ? `rgba(240, 138, 0, ${0.1 + 0.8 * inten})` : undefined, color: inten > 0.55 ? '#fff' : undefined }}>
                               {v != null ? n1(v) : '—'}
                             </td>
                           )
@@ -247,12 +262,12 @@ export function SeccionE8({ data }: { data: PickingData }) {
               <div>
                 <p className="text-sm font-medium mb-2">Tiempo muerto por turno</p>
                 <ResponsiveContainer width="100%" height={240}>
-                  <BarChart data={data.muertoPorTurno} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+                  <BarChart data={muertoTurnoHoras} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis dataKey="nombre" tick={{ fontSize: 10 }} />
-                    <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 60)}h`} />
-                    <Tooltip formatter={(v: number) => horasHMin(v)} />
-                    <Bar dataKey="minutosMuerto" name="Minutos muertos" fill={GG_NARANJA} radius={[3, 3, 0, 0]} />
+                    <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}h`} />
+                    <Tooltip formatter={(v: number) => `${n1(v)} h`} />
+                    <Bar dataKey="horas" name="Horas muertas" fill={GG_NARANJA} radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -266,7 +281,7 @@ export function SeccionE8({ data }: { data: PickingData }) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Sector</TableHead>
-                      <TableHead className="text-right">Muerto</TableHead>
+                      <TableHead className="text-right">Muerto (h)</TableHead>
                       <TableHead className="text-right">% de su jornada</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -274,7 +289,7 @@ export function SeccionE8({ data }: { data: PickingData }) {
                     {data.muertoPorSector.slice(0, 6).map((s) => (
                       <TableRow key={s.sector}>
                         <TableCell className="font-medium">{s.sector}</TableCell>
-                        <TableCell className="text-right tabular-nums">{n(s.minutosMuerto)}′</TableCell>
+                        <TableCell className="text-right tabular-nums">{n1(s.minutosMuerto / 60)}</TableCell>
                         <TableCell className="text-right tabular-nums font-semibold text-red-700">{pct(s.pctJornada)}</TableCell>
                       </TableRow>
                     ))}

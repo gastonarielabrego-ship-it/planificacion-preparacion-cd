@@ -37,6 +37,7 @@ export interface MaqData {
   navesPorOperarioDia: number | null
   porActividad: { actividad: string; codigo: string; operarios: number; personasPromDia: number | null; dias: number; movimientos: number; bultos: number; horas: number }[]
   porHora: { hora: number; etiqueta: string; total: number; M: number; T: number; N: number }[]
+  porHoraApros: { hora: number; etiqueta: string; total: number }[]
   horaPico: { hora: number; movimientos: number; promDia: number } | null
   tieneHorario: boolean
   porTurno: { turno: string; personasPromDia: number | null; operarios: number; movimientos: number; bultos: number; porActividad: { actividad: string; personasProm: number | null; operarios: number }[]; personasPromApros: number | null; personasPromHom: number | null; porTareaActividad: { tarea: string; actividad: string; codigo: string; personasPromDia: number | null; operarios: number; movimientos: number }[] }[]
@@ -73,18 +74,21 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
   const [filtroOp, setFiltroOp] = useState('')
   // datos de apoyo tolerantes a ausencia (el modulo maq puede venir vacio)
   const porHora = data.porHora ?? []
+  // foco apros: movimientos de los clarks que hacen apros por hora (el espera de
+  // piking se resuelve con aprontamiento, no con movimientos de homogeneos)
+  const porHoraApros = data.porHoraApros ?? porHora.map((p) => ({ hora: p.hora, etiqueta: p.etiqueta, total: 0 }))
   const celdasCalor = data.calorApros?.celdas ?? []
   const movPorPersona = data.movPorPersonaMes ?? []
-  const movPorHora = porHora.map((p) => p.total)
+  const movPorHora = porHoraApros.map((p) => p.total)
 
-  // ---- cruce movimientos por hora vs espera de piking por hora ----
+  // ---- cruce movimientos de apros por hora vs espera de piking por hora ----
   const cruce = useMemo(() => {
     const espera = esperaPikingPorHora.map((h) => h.minutos)
     const hayEspera = espera.some((m) => m > 0)
     const hayMov = movPorHora.some((m) => m > 0)
     if (!hayEspera || !hayMov) return null
     const r = pearson(movPorHora, espera)
-    const union = porHora.map((p, i) => ({
+    const union = porHoraApros.map((p, i) => ({
       etiqueta: p.etiqueta,
       movimientos: p.total,
       esperaMin: esperaPikingPorHora[i]?.minutos ?? 0,
@@ -93,7 +97,7 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
     const topEspera = [...union].sort((a, b) => b.esperaMin - a.esperaMin).slice(0, 4)
     const coinciden = topMov.filter((m) => topEspera.some((e) => e.etiqueta === m.etiqueta)).length
     return { r, union, topMov, topEspera, coinciden }
-  }, [porHora, esperaPikingPorHora, movPorHora])
+  }, [porHoraApros, esperaPikingPorHora, movPorHora])
 
   const calorMax = Math.max(1, ...celdasCalor.map((c) => c.mov))
   const calorMap = new Map(celdasCalor.map((c) => [`${c.mes}|${c.actividad}`, c]))
@@ -271,9 +275,9 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
       {cruce && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2"><GitCompareArrows className="h-4 w-4" /> Cruce con tiempos muertos: ¿los movimientos coinciden con la espera de piking?</CardTitle>
+            <CardTitle className="text-base flex items-center gap-2"><GitCompareArrows className="h-4 w-4" /> Cruce con tiempos muertos: ¿los movimientos de apros coinciden con la espera de piking?</CardTitle>
             <CardDescription>
-              Movimientos de clark por hora contra minutos de espera de piking informados por hora. Correlación de {n1((cruce.r ?? 0) * 100)}% — {cruce.coinciden} de las 4 horas con más movimientos también están entre las 4 de más espera
+              Movimientos de los clarks que hacen apros por hora contra horas de espera de piking informadas por hora. Correlación de {n1((cruce.r ?? 0) * 100)}% — {cruce.coinciden} de las 4 horas con más movimientos de apros también están entre las 4 de más espera
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -283,27 +287,27 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
                 <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={1} />
                 <YAxis yAxisId="mov" tick={{ fontSize: 10 }} />
                 <YAxis yAxisId="esp" orientation="right" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 60)}h`} />
-                <Tooltip formatter={(v: number, name: string) => (name === 'Espera de piking' ? [n(v) + ' min', name] : [n1(v), name])} />
+                <Tooltip formatter={(v: number, name: string) => (name === 'Espera de piking' ? [`${n1(v / 60)} h`, name] : [n1(v), name])} />
                 <Legend />
-                <Bar yAxisId="mov" dataKey="movimientos" name="Movimientos de clark" fill={GG_VERDE} radius={[2, 2, 0, 0]} />
+                <Bar yAxisId="mov" dataKey="movimientos" name="Movimientos de clark (apros)" fill={GG_VERDE} radius={[2, 2, 0, 0]} />
                 <Line yAxisId="esp" dataKey="esperaMin" name="Espera de piking" stroke="#dc2626" strokeWidth={2} dot={{ r: 2 }} />
               </ComposedChart>
             </ResponsiveContainer>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-md border p-3">
-                <p className="text-xs font-medium mb-1">Horas con más movimientos</p>
+                <p className="text-xs font-medium mb-1">Horas con más movimientos de apros</p>
                 <p className="text-sm text-muted-foreground">{cruce.topMov.map((h) => `${h.etiqueta} (${n1(h.movimientos)})`).join(' · ')}</p>
               </div>
               <div className="rounded-md border p-3">
                 <p className="text-xs font-medium mb-1">Horas con más espera de piking</p>
-                <p className="text-sm text-muted-foreground">{cruce.topEspera.map((h) => `${h.etiqueta} (${n(h.esperaMin)} min)`).join(' · ')}</p>
+                <p className="text-sm text-muted-foreground">{cruce.topEspera.map((h) => `${h.etiqueta} (${n1(h.esperaMin / 60)} h)`).join(' · ')}</p>
               </div>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               <Clock className="inline h-3 w-3 mr-1" />
               {cruce.r != null && Math.abs(cruce.r) >= 0.5
-                ? `Correlación ${cruce.r > 0 ? 'positiva' : 'inversa'} fuerte (${n1(cruce.r)}): ${cruce.r > 0 ? 'las horas de mayor movimiento de clarks son también las de mayor espera de piking — la dotación de apros no alcanza en esos horarios' : 'los movimientos no explican la espera — revisar other causas (oleadas, asignación de ubicaciones)'}.`
-                : `Correlación débil (${n1(cruce.r ?? 0)}): la espera de piking no sigue al movimiento de clarks por hora — conviene revisar cuándo se genera la espera (olas) en el detalle.`}
+                ? `Correlación ${cruce.r > 0 ? 'positiva' : 'inversa'} fuerte (${n1(cruce.r)}): ${cruce.r > 0 ? 'las horas de mayor movimiento de apros son también las de mayor espera de piking — la dotación de apros no alcanza en esos horarios' : 'los movimientos no explican la espera — revisar otras causas (oleadas, asignación de ubicaciones)'}.`
+                : `Correlación débil (${n1(cruce.r ?? 0)}): la espera de piking no sigue al movimiento de apros por hora — conviene revisar cuándo se genera la espera (olas) en el detalle.`}
             </p>
           </CardContent>
         </Card>

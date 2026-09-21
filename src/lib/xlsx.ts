@@ -32,6 +32,17 @@ const numDe = (v: unknown): number | null => {
 export function matrizOlaARecords(wb: XLSX.WorkBook): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = []
   const fechaValida = (d: Date | null): boolean => !!d && d.getTime() >= Date.UTC(2000, 0, 1) && d.getTime() < Date.UTC(2100, 0, 1)
+
+  // meses en español para validar que las fechas de la hoja correspondan al mes
+  // de su nombre. Sin esta validación, una hoja con un bloque viejo pegado (ej.
+  // "Julio 2026" que aún contiene el bloque de mayo con sus valores) sobrescribe
+  // los datos correctos de la hoja de ese mes.
+  const MESES: Record<string, number> = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 }
+  const mesDeHoja = (nombre: string): number | null => {
+    const primera = nombre.trim().toLowerCase().split(/[\s-]+/)[0] ?? ''
+    return MESES[primera] ?? null
+  }
+
   for (const sheetName of wb.SheetNames) {
     const sheet = wb.Sheets[sheetName]
     if (!sheet) continue
@@ -56,6 +67,19 @@ export function matrizOlaARecords(wb: XLSX.WorkBook): Record<string, unknown>[] 
       if (validas >= 10) { filaFechas = fechas; break }
     }
     if (!filaFechas) continue
+
+    // validación anti-bloques viejos: la mayoría de las fechas de la hoja deben
+    // caer en el mes que dice su nombre (ej. "Mayo 2026" → mes 5). Si una hoja
+    // "Julio 2026" todavía contiene el bloque de mayo, sus fechas son de mayo y
+    // la hoja se descarta: no aporta datos de julio ni corrompe los de mayo.
+    const mesHoja = mesDeHoja(sheetName)
+    if (mesHoja != null) {
+      const validas = filaFechas.filter((f) => fechaValida(f))
+      if (validas.length) {
+        const enMes = validas.filter((f) => f!.getUTCMonth() + 1 === mesHoja).length
+        if (enMes / validas.length < 0.7) continue
+      }
+    }
 
     // filas de conceptos
     let ola: number[] | null = null

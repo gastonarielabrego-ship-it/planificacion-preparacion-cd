@@ -133,7 +133,7 @@ export async function GET() {
         [tm.registros ? nf(tm.totalMin / 60) : '—', 'Tiempo muerto informado (h)', h61Horas ? `${nf((tm.totalMin / 60 / h61Horas) * 100, 1)}% de las horas H61` : `${nf(tm.registros)} eventos`, GRIS],
         [esperaCat ? nf(esperaCat.minutos / 60) : '—', 'Espera de piking (h)', esperaCat ? `motivo n° 1: ${nf(esperaCat.pct, 1)}% del muerto` : '', ROJO],
         [maq.vacio ? 'sin datos' : nf(maq.personasPromDia, 1), 'Personas/día (maquinistas)', maq.vacio ? '' : `${nf(maq.tareas.personasPromApros, 1)} apros · ${nf(maq.tareas.personasPromHom, 1)} homog.`, VERDE_OSC],
-        [picking.vacio ? 'sin datos' : `${nf(e8Prom, 1)} / ${nf(e8Med, 1)} min`, 'E-8 muerto entre piking (prom/med)', picking.vacio ? '' : `${nf(picking.tiempos.pctMuerto, 1)}% de la jornada`, NARANJA],
+        [picking.vacio ? 'sin datos' : `${nf(e8Prom != null ? e8Prom / 60 : null, 1)} / ${nf(e8Med != null ? e8Med / 60 : null, 1)} h`, 'E-8 muerto entre piking (prom/med)', picking.vacio ? '' : `${nf(picking.tiempos.pctMuerto, 1)}% de la jornada`, NARANJA],
       ]
       kpis.forEach((k, i) => {
         const col = i % 4, row = Math.floor(i / 4)
@@ -245,18 +245,18 @@ export async function GET() {
         x: 6.65, y: 1.5, w: 6.2, h: 3.4, barDir: 'col', chartColors: [VERDE], showLegend: false,
         catAxisTitle: 'Hora', valAxisTitle: 'Movimientos', showCatAxisTitle: true, showValAxisTitle: true, catAxisLabelFontSize: 8, valAxisLabelFontSize: 9,
       })
-      // cruce con espera de piking
+      // cruce con espera de piking (movimientos de los clarks que hacen apros)
       const esperaHora = tm.porHoraEsperaPiking.map((h) => h.minutos)
-      const movHora = maq.porHora.map((p) => p.total)
+      const movHora = (maq.porHoraApros ?? maq.porHora.map((p) => ({ hora: p.hora, etiqueta: p.etiqueta, total: 0 }))).map((p) => p.total)
       const r = pearson(movHora, esperaHora)
-      const union = maq.porHora.map((p, idx) => ({ etiqueta: p.etiqueta, mov: p.total, esp: tm.porHoraEsperaPiking[idx]?.minutos ?? 0 })).filter((x) => x.mov > 0 || x.esp > 0)
+      const union = maq.porHoraApros.map((p, idx) => ({ etiqueta: p.etiqueta, mov: p.total, esp: tm.porHoraEsperaPiking[idx]?.minutos ?? 0 })).filter((x) => x.mov > 0 || x.esp > 0)
       const topMov = [...union].sort((a, b) => b.mov - a.mov).slice(0, 3)
       const topEsp = [...union].sort((a, b) => b.esp - a.esp).slice(0, 3)
       const coinciden = topMov.filter((m) => topEsp.some((e) => e.etiqueta === m.etiqueta)).length
       s.addShape('roundRect', { x: 6.65, y: 5.15, w: 6.2, h: 1.75, rectRadius: 0.06, fill: { color: VERDE_BG }, line: { color: VERDE, width: 1 } })
       s.addText([
-        { text: 'Cruce con la espera de piking', options: { bold: true, fontSize: 12, color: VERDE_OSC, breakLine: true } },
-        { text: `Correlación movimientos ↔ espera: ${r != null ? nf(r, 2) : '—'}. Horas de mayor movimiento: ${topMov.map((m) => m.etiqueta.slice(0, 2)).join(', ')}. Horas de mayor espera: ${topEsp.map((m) => m.etiqueta.slice(0, 2)).join(', ')}. Coinciden ${coinciden} de 3: la dotación de apros de esas franjas es la palanca directa para reducir la espera de piking.`, options: { fontSize: 10.5, color: GRIS } },
+        { text: 'Cruce con la espera de piking (apros)', options: { bold: true, fontSize: 12, color: VERDE_OSC, breakLine: true } },
+        { text: `Correlación movimientos de apros ↔ espera: ${r != null ? nf(r, 2) : '—'}. Horas de mayor movimiento de apros: ${topMov.map((m) => m.etiqueta.slice(0, 2)).join(', ')}. Horas de mayor espera: ${topEsp.map((m) => m.etiqueta.slice(0, 2)).join(', ')}. Coinciden ${coinciden} de 3: la dotación de apros de esas franjas es la palanca directa para reducir la espera de piking.`, options: { fontSize: 10.5, color: GRIS } },
       ], { x: 6.85, y: 5.25, w: 5.85, h: 1.55, valign: 'middle' })
       notaPie(s, 'Los movimientos por hora alimentan directamente el análisis de la espera de piking: alinear la dotación de clarks con las franjas de mayor demanda de apros.', 7.12)
     }
@@ -277,13 +277,13 @@ export async function GET() {
         filas.push(filaDatos([c.categoria, nf(c.minutos / 60, 1), `${nf(c.pct, 1)}%`, `${nf(acum, 1)}%`], i % 2 === 1))
       })
       s.addTable(filas, { x: 3.25, y: 1.5, w: 5.6, colW: [2.6, 1.0, 1.0, 1.0], border: { type: 'solid', pt: 0.5, color: BORDE }, rowH: 0.34, valign: 'middle', margin: 0.04 })
-      s.addChart(pptx.ChartType.line, [{ name: 'Espera de piking por hora (min)', labels: tm.porHoraEsperaPiking.map((h) => h.hora), values: tm.porHoraEsperaPiking.map((h) => Math.round(h.minutos)) }], {
+      s.addChart(pptx.ChartType.line, [{ name: 'Espera de piking por hora (h)', labels: tm.porHoraEsperaPiking.map((h) => h.hora), values: tm.porHoraEsperaPiking.map((h) => +(h.minutos / 60).toFixed(2)) }], {
         x: 0.45, y: 4.0, w: 8.4, h: 2.85, chartColors: [ROJO], showLegend: false, lineSize: 2.5, lineSmooth: true,
-        catAxisTitle: 'Hora del día', valAxisTitle: 'Minutos', showCatAxisTitle: true, showValAxisTitle: true, catAxisLabelFontSize: 9, valAxisLabelFontSize: 9,
+        catAxisTitle: 'Hora del día', valAxisTitle: 'Horas', showCatAxisTitle: true, showValAxisTitle: true, catAxisLabelFontSize: 9, valAxisLabelFontSize: 9,
       })
       const topNaves = tm.porNave.slice(0, 5)
       const filasN: Fila[] = [filaHeader(['Nave', 'Horas espera', 'Pasillos con más espera'])]
-      topNaves.forEach((nv, i) => filasN.push(filaDatos([nv.nave, nf(nv.minutos / 60, 1), nv.pasillos.slice(0, 3).map((p) => `${p.pasillo} (${Math.round(p.minutos)}′)`).join(', ')], i % 2 === 1, { fontSize: 9, align: 'left' })))
+      topNaves.forEach((nv, i) => filasN.push(filaDatos([nv.nave, nf(nv.minutos / 60, 1), nv.pasillos.slice(0, 3).map((p) => `${p.pasillo} (${nf(p.minutos / 60, 1)} h)`).join(', ')], i % 2 === 1, { fontSize: 9, align: 'left' })))
       s.addTable(filasN, { x: 9.15, y: 1.5, w: 3.7, colW: [0.9, 1.0, 1.8], border: { type: 'solid', pt: 0.5, color: BORDE }, rowH: 0.4, valign: 'middle', margin: 0.04 })
       s.addText(esperaCat ? [
         { text: 'Espera de piking', options: { bold: true, fontSize: 12, color: ROJO, breakLine: true } },
@@ -298,18 +298,18 @@ export async function GET() {
       tituloSlide(s, '7', 'E-8 — tiempo muerto entre piking', `Grano ${picking.grano === 'resumen' ? 'resumen por colaborador' : 'log evento a evento'} · ${picking.desde} a ${picking.hasta} · ${nf(picking.operarios)} colaboradores`)
       const promE = picking.grano === 'resumen' ? picking.muertoBloques.promedio : picking.gapPromedio
       const medE = picking.grano === 'resumen' ? picking.muertoBloques.mediana : picking.gapMediana
-      kpiCard(s, 0.45, 1.5, 3.0, 1.9, `${nf(promE, 1)} min`, 'Promedio por bloque', picking.grano === 'resumen' ? 'colaborador × día × turno' : 'entre eventos consecutivos', NARANJA)
-      kpiCard(s, 3.65, 1.5, 3.0, 1.9, `${nf(medE, 1)} min`, 'Mediana', 'el caso típico, sin extremos', NARANJA)
+      kpiCard(s, 0.45, 1.5, 3.0, 1.9, `${nf(promE != null ? promE / 60 : null, 1)} h`, 'Promedio por bloque', picking.grano === 'resumen' ? 'colaborador × día × turno' : 'entre eventos consecutivos', NARANJA)
+      kpiCard(s, 3.65, 1.5, 3.0, 1.9, `${nf(medE != null ? medE / 60 : null, 1)} h`, 'Mediana', 'el caso típico, sin extremos', NARANJA)
       kpiCard(s, 6.85, 1.5, 3.0, 1.9, `${nf(picking.tiempos.pctMuerto, 1)}%`, 'de la jornada', `${nf(picking.tiempos.horasMuerto)} h muertas de ${nf(picking.tiempos.horasTotal)} h`, ROJO)
       kpiCard(s, 10.05, 1.5, 2.85, 1.9, nf(picking.bultos), 'Bultos del período', picking.productividad.neta ? `neta ${nf(picking.productividad.neta, 1)} · superNeta ${nf(picking.productividad.superNeta, 1)} bult/h` : '', VERDE_OSC)
       if (picking.muertoPorTurno.length) {
-        const filasT: Fila[] = [filaHeader(['Turno', 'Minutos muertos', 'Promedio/bloque'])]
-        picking.muertoPorTurno.forEach((t, i) => filasT.push(filaDatos([t.nombre, nf(t.minutosMuerto), nf(t.promedio, 1)], i % 2 === 1)))
+        const filasT: Fila[] = [filaHeader(['Turno', 'Horas muertas', 'Promedio/bloque (h)'])]
+        picking.muertoPorTurno.forEach((t, i) => filasT.push(filaDatos([t.nombre, nf(t.minutosMuerto / 60, 1), nf(t.promedio != null ? t.promedio / 60 : null, 1)], i % 2 === 1)))
         s.addTable(filasT, { x: 0.45, y: 3.85, w: 6.1, colW: [2.3, 2.0, 1.8], border: { type: 'solid', pt: 0.5, color: BORDE }, rowH: 0.36, valign: 'middle', margin: 0.04 })
       }
       if (picking.muertoPorSector.length) {
-        const filasS: Fila[] = [filaHeader(['Sector (nave)', 'Muerto', '% de su jornada'])]
-        picking.muertoPorSector.slice(0, 6).forEach((x, i) => filasS.push(filaDatos([x.sector, nf(x.minutosMuerto), x.pctJornada ? `${nf(x.pctJornada, 1)}%` : '—'], i % 2 === 1)))
+        const filasS: Fila[] = [filaHeader(['Sector (nave)', 'Muerto (h)', '% de su jornada'])]
+        picking.muertoPorSector.slice(0, 6).forEach((x, i) => filasS.push(filaDatos([x.sector, nf(x.minutosMuerto / 60, 1), x.pctJornada ? `${nf(x.pctJornada, 1)}%` : '—'], i % 2 === 1)))
         s.addTable(filasS, { x: 6.85, y: 3.85, w: 6.05, colW: [2.5, 1.7, 1.85], border: { type: 'solid', pt: 0.5, color: BORDE }, rowH: 0.36, valign: 'middle', margin: 0.04 })
       }
       notaPie(s, 'Este es el tiempo que la persona pasa sin preparar: reducirlo es la vía directa para aumentar la productividad sin sumar dotación.', 7.12)

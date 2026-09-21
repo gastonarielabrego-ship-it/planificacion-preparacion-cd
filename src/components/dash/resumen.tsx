@@ -131,7 +131,7 @@ export function ResumenTab({ onIrACarga }: { onIrACarga: () => void }) {
 
       {/* 5. TIEMPOS MUERTOS */}
       <section className="space-y-4">
-        <TituloSeccion icono={Timer} titulo="5 · Tiempos muertos — dónde y cuándo se pierde el tiempo" detalle="Pareto de motivos agrupados (espera de piking unificada), espera por nave, por turno y por hora" />
+        <TituloSeccion icono={Timer} titulo="5 · Tiempos muertos — dónde y cuándo se pierde el tiempo" detalle="Pareto de motivos agrupados (espera de piking unificada), espera por nave y por turno, con todos los valores en horas" />
         {tm.isLoading ? <SkeletonSeccion /> : tm.error ? <SinDatos mensaje={`Error: ${(tm.error as Error).message}`} /> : (
           <SeccionTiemposMuertos data={tm.data as TMData} horasH61={h61.data?.resumen?.horas ?? 0} />
         )}
@@ -140,8 +140,8 @@ export function ResumenTab({ onIrACarga }: { onIrACarga: () => void }) {
       {/* 6. E-8 */}
       {picking.data && !picking.data.vacio && picking.data.registros > 0 && (
         <section className="space-y-4">
-          <TituloSeccion icono={Boxes} titulo="6 · E-8 — tiempo muerto entre piking" detalle="Promedio y mediana del tiempo muerto entre piking, horario en que se concentra, mapa de calor, % de la jornada y naves donde se identifica" />
-          <SeccionE8 data={picking.data} />
+          <TituloSeccion icono={Boxes} titulo="6 · E-8 — tiempo muerto entre piking" detalle="Promedio y mediana del tiempo muerto entre piking, mapa de calor por turno y por hora, % de la jornada y naves donde se identifica" />
+          <SeccionE8 data={picking.data} calorHora={tm.data?.calorHora} />
         </section>
       )}
     </div>
