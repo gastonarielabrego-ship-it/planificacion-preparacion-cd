@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://health.aws.amazon.com",
+    "name": "Service health - Sep 20, 2026 | AWS Health Dashboard | Global",
+    "snippet": "View the overall status and health of AWS services using the AWS Health Dashboard.",
+    "host_name": "health.aws.amazon.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://neon.com/blog/incident-review-pageserver-outage-in-us-east-1",
+    "name": "Incident Review: Pageserver outage in us-east-1 - Neon",
+    "snippet": "Aug 21, 2024 · 17:45 engineering team identified that node pageserver-7.us-east-1.aws.neon.tech was at fault, and diagnosed it as a bad node (no metrics, no ...",
+    "host_name": "neon.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://statusgator.com/services/neon/aws-us-east-2",
+    "name": "Neon AWS us-east-2 status - StatusGator",
+    "snippet": "Neon AWS us-east-2 down? Check the current Neon AWS us-east-2 status right now, learn about outages, downtime, incidents, and issues.",
+    "host_name": "statusgator.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/aws/comments/1oiidra/aws_ec2_network_issues_in_useast1",
+    "name": "AWS EC2 network issues in us-east-1? - Reddit",
+    "snippet": "Oct 29, 2025 · Around 6 hours ago I saw both AWS and Postman error reports on Downdetector. Only Postman updated their status page at the time. Took a look now ...",
+    "host_name": "www.reddit.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://health.aws.amazon.com/health/status?eventID=arn:aws:health:us-east-1::event/MULTIPLE_SERVICES/AWS_MULTIPLE_SERVICES_OPERATIONAL_ISSUE/AWS_MULTIPLE_SERVICES_OPERATIONAL_ISSUE_BA540_514A652BE1A",
+    "name": "Service health - Sep 20, 2026 | AWS Health Dashboard | Global",
+    "snippet": "1:26 AM PDT We can confirm significant error rates for requests made to the DynamoDB endpoint in the US-EAST-1 Region. This issue also affects ...",
+    "host_name": "health.aws.amazon.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  }
+]

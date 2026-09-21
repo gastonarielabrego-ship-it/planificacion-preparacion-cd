@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://neon.com",
+    "name": "Incident Review: Pageserver outage in us-east-1",
+    "snippet": "Aug 21, 2024 — us-east-1 experienced an outage for up to 2 hours , Pageserver outage in us-east-1. This post explains what went wrong, how we fixed it,  ...",
+    "host_name": "neon.com",
+    "rank": 0,
+    "date": "Aug 21, 2024",
+    "favicon": ""
+  },
+  {
+    "url": "https://daily.dev",
+    "name": "Incident Review: Pageserver outage in us-east-1",
+    "snippet": "Jul 9, 2026 — On August 14, 2024, about 0.4% of Neon customer projects in us - east - 1 experienced up to 2 hours of downtime after an EC2 instance hosting a ... Read more",
+    "host_name": "daily.dev",
+    "rank": 1,
+    "date": "Jul 9, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://technical.ly",
+    "name": "Why AWS US-East-1 outages take down the internet",
+    "snippet": "Oct 20, 2025 — Difficulty at US - East - 1 , the largest and most active AWS data center cluster, was cited as the reason behind the outage , which impacted dozens ... Read more",
+    "host_name": "technical.ly",
+    "rank": 2,
+    "date": "Oct 20, 2025",
+    "favicon": ""
+  },
+  {
+    "url": "https://status.cloud.google.com/incidents/J5ia5t9p3g9Q5Wi7r8Ev",
+    "name": "Incident details | Google Cloud Service Health",
+    "snippet": "Sep 1, 2026 — Incident began at 2026-09-01 07:44 and ended at 2026-09-01 11:52 (all times are US /Pacific). Previously affected location(s). Iowa ( us -central1) ... Read more",
+    "host_name": "status.cloud.google.com",
+    "rank": 3,
+    "date": "Sep 1, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://builder.aws.com",
+    "name": "The 28-Hour Meltdown: What Happened When AWS US-",
+    "snippet": "May 9, 2026 — On May 7, 2026 , a single data center in AWS's us - east - 1 region got too hot. Servers shut themselves down . Power was lost.",
+    "host_name": "builder.aws.com",
+    "rank": 4,
+    "date": "May 9, 2026",
+    "favicon": ""
+  }
+]
