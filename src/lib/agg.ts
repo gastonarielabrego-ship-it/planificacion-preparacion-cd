@@ -1828,11 +1828,18 @@ function porMesNaveFiltrado(mesNav: Map<string, { dias: number; ops: number }>, 
 // demanda (ola + pendiente), ritmos H61 (global / por turno / base / extras) y
 // productividades del E-8, mas el perfil horario promedio para planificar por hora.
 export async function getPlanificador() {
-  const [olaRows, ops, th, pickAgg] = await Promise.all([
+  const [olaRows, ops, th, pickAgg, e8Rows, oh] = await Promise.all([
     db.olaDia.findMany({ orderBy: { fecha: 'asc' } }),
     db.h61OpDia.findMany({ orderBy: { fecha: 'asc' } }),
     db.h61TurnoHora.findMany(),
     db.pickingEvento.aggregate({ _sum: { bultos: true, minutos: true, muertoMin: true, netoMin: true, superNetoMin: true } }),
+    // E-8 grano resumen por sector/circuito (ACT2, ACT4, JAULA, XD): ritmos por circuito
+    db.pickingEvento.findMany({
+      where: { minutos: { not: null } },
+      select: { circuito: true, bultos: true, minutos: true, netoMin: true, muertoMin: true },
+    }),
+    // perfil de operarios por hora (para el ritmo real de cada hora)
+    db.h61OpHora.findMany({ select: { fecha: true, hora: true, bultos: true, esExtra: true, operario: true } }),
   ])
 
   const med = (vals: number[]): number | null => {
@@ -1950,6 +1957,82 @@ export async function getPlanificador() {
     }
   })
 
+  // --- PLANIFICACIÓN DIARIA: perfiles horarios por tipo de día (L-V, sábado, domingo) ---
+  const tipoDeDow = (dw: number) => (dw === 0 ? 'dom' : dw === 6 ? 'sab' : 'lv') as 'lv' | 'sab' | 'dom'
+  const perfAgg: Record<'lv' | 'sab' | 'dom', { bultos: number[]; dias: Set<string> }> = {
+    lv: { bultos: new Array(24).fill(0), dias: new Set() },
+    sab: { bultos: new Array(24).fill(0), dias: new Set() },
+    dom: { bultos: new Array(24).fill(0), dias: new Set() },
+  }
+  for (const r of th) {
+    const k = dia(r.fecha)
+    const t = tipoDeDow(new Date(k + 'T00:00:00.000Z').getUTCDay())
+    perfAgg[t].bultos[r.hora] += r.bultos
+    perfAgg[t].dias.add(k)
+  }
+  const perfiles = {
+    lv: perfAgg.lv.bultos.map((b) => (perfAgg.lv.dias.size ? Math.round(b / perfAgg.lv.dias.size) : 0)),
+    sab: perfAgg.sab.bultos.map((b) => (perfAgg.sab.dias.size ? Math.round(b / perfAgg.sab.dias.size) : 0)),
+    dom: perfAgg.dom.bultos.map((b) => (perfAgg.dom.dias.size ? Math.round(b / perfAgg.dom.dias.size) : 0)),
+  }
+  const diasPerfil = { lv: perfAgg.lv.dias.size, sab: perfAgg.sab.dias.size, dom: perfAgg.dom.dias.size }
+
+  // ritmo real por hora (jornada, sin extras): bultos del día-hora ÷ operarios distintos del día-hora,
+  // promediado por día (por eso se agrupa primero por fecha)
+  const ohAgg = new Map<number, Map<string, { bultos: number; ops: Set<string> }>>()
+  for (const r of oh) {
+    if (r.esExtra) continue
+    let m = ohAgg.get(r.hora)
+    if (!m) { m = new Map(); ohAgg.set(r.hora, m) }
+    const k = dia(r.fecha)
+    let a = m.get(k)
+    if (!a) { a = { bultos: 0, ops: new Set() }; m.set(k, a) }
+    a.bultos += r.bultos
+    a.ops.add(r.operario)
+  }
+  const ritmoHora = Array.from({ length: 24 }, (_, h) => {
+    const m = ohAgg.get(h)
+    if (!m || !m.size) return null
+    const bultos = [...m.values()].reduce((a, x) => a + x.bultos, 0)
+    const ops = [...m.values()].reduce((a, x) => a + x.ops.size, 0)
+    return ops ? r1(bultos / ops) : null
+  })
+
+  // --- PLANIFICACIÓN DIARIA: ritmos por circuito del E-8 (grano resumen) ---
+  const normSector = (s: string | null) => (s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const circAgg = new Map<string, { bultos: number; min: number; neto: number; muerto: number }>()
+  for (const r of e8Rows) {
+    const k = normSector(r.circuito) || 'SINSECTOR'
+    let c = circAgg.get(k)
+    if (!c) { c = { bultos: 0, min: 0, neto: 0, muerto: 0 }; circAgg.set(k, c) }
+    c.bultos += r.bultos ?? 0
+    c.min += r.minutos ?? 0
+    c.neto += r.netoMin ?? 0
+    c.muerto += r.muertoMin ?? 0
+  }
+  const e8BultosTot = [...circAgg.values()].reduce((a, c) => a + c.bultos, 0)
+  const e8HorasTot = [...circAgg.values()].reduce((a, c) => a + c.min, 0) / 60
+  const ritmoE8 = e8HorasTot > 0 ? r2(e8BultosTot / e8HorasTot) : null
+  const ritmoBaseH61 = horasTot - extrasTot > 0 ? r2(baseTot / (horasTot - extrasTot)) : null
+  // calibración: los ritmos por circuito (E-8) se ajustan para que el promedio global de la
+  // preparación coincida con el ritmo base medido por H61 (el "85" de referencia del usuario)
+  const factorCal = ritmoE8 && ritmoBaseH61 ? r2(ritmoBaseH61 / ritmoE8) : 1
+  const ETIQUETA_SECTOR: Record<string, string> = { ACT2: 'ACT. 2', ACT4: 'ACT. 4', JAULA: 'Jaula', XD: 'XD' }
+  const circuitos = [...circAgg.entries()]
+    .filter(([, c]) => c.bultos > 0 && e8BultosTot > 0 && c.bultos / e8BultosTot >= 0.005)
+    .sort((a, b) => b[1].bultos - a[1].bultos)
+    .map(([sector, c]) => ({
+      sector,
+      etiqueta: ETIQUETA_SECTOR[sector] ?? sector,
+      bultos: Math.round(c.bultos),
+      horas: r1(c.min / 60),
+      ritmoTotal: c.min ? r2(c.bultos / (c.min / 60)) : null,
+      ritmoNeto: c.neto ? r2(c.bultos / (c.neto / 60)) : null,
+      pctMuerto: c.min ? r1(((c.muerto ?? 0) / c.min) * 100) : null,
+      share: r1((c.bultos / e8BultosTot) * 100),
+      ritmoCal: c.min && ritmoBaseH61 && ritmoE8 ? r2(c.bultos / (c.min / 60) * factorCal) : null,
+    }))
+
   // --- productividades del E-8 (grano resumen: tiempos informados) ---
   const s = pickAgg._sum
   const picking = s.minutos && s.minutos > 0
@@ -1980,6 +2063,13 @@ export async function getPlanificador() {
     },
     picking,
     perfilHora,
+    planDiaria: {
+      circuitos,
+      calibracion: { ritmoH61: ritmoBaseH61, ritmoE8, factor: factorCal },
+      perfiles,
+      diasPerfil,
+      ritmoHora,
+    },
   }
 }
 

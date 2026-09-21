@@ -349,6 +349,128 @@ export async function GET() {
       notaPie(s, 'El ahorro de personas-turno es el resultado de la mejora de productividad: permite cubrir más demanda, reducir horas extra o liberar horas de preparación.', 7.12)
     }
 
+    // ============ S10 · DIAGNÓSTICO — FOCOS DE MEJORA ============
+    {
+      const s = pptx.addSlide()
+      tituloSlide(s, '9', 'Diagnóstico — hallazgos y focos de mejora', 'Qué dicen los datos del período y dónde conviene atacar primero.')
+      const esperaCat = tm.porCategoria.find((c) => c.categoria === 'ESPERA PICKING')
+      const esperaH = esperaCat ? esperaCat.minutos / 60 : 0
+      const topHoras = [...tm.porHoraEsperaPiking].sort((a, b) => b.minutos - a.minutos).slice(0, 3)
+      const topNaves = tm.porNave.slice(0, 2)
+      const muertosSector = picking.vacio ? [] : picking.muertoPorSector ?? []
+      const xd = muertosSector.find((x) => x.sector.toUpperCase().includes('XD'))
+      const tnR = cap.porTurno.find((t) => t.turno === 'N')?.ritmoProm ?? null
+      const ttR = cap.porTurno.find((t) => t.turno === 'T')?.ritmoProm ?? null
+      const sab = cap.sabadosResumen
+      const extrasPct = cap.resumen?.pctExtras ?? null
+      const extrasH = cap.resumen?.horasExtras ?? 0
+      const hallazgos: [string, string, string][] = []
+      hallazgos.push([
+        '1 · Espera de piking: motivo n° 1 de tiempo muerto',
+        `${nf(esperaH)} h (${esperaCat ? nf(esperaCat.pct, 1) : '—'}% del muerto)`,
+        'Es el foco con mayor retorno: se recupera con reabastecimiento preventivo y apros en las horas valle',
+      ])
+      if (topHoras.length) {
+        hallazgos.push([
+          '2 · La espera se concentra en horas concretas',
+          topHoras.map((h) => `${h.etiqueta} (${nf(h.minutos / 60, 1)} h)`).join(' · '),
+          'Hay ventanas específicas para atacar: reforzar reposición justo antes de esos picos',
+        ])
+      }
+      if (topNaves.length) {
+        hallazgos.push([
+          '3 · Naves con más espera de piking',
+          topNaves.map((nv) => `Nave ${nv.nave} (${nf(nv.minutos / 60, 1)} h)`).join(' · '),
+          'Revisar lotización y ubicaciones de alta rotación en esas naves',
+        ])
+      }
+      if (xd && xd.pctJornada != null) {
+        hallazgos.push([
+          '4 · Circuito XD anómalo (E-8)',
+          `${nf(xd.pctJornada, 1)}% de su jornada es tiempo muerto`,
+          '2 de cada 3 horas no producen: auditar medición, asignación y mix del circuito',
+        ])
+      }
+      if (sab) {
+        hallazgos.push([
+          '5 · Sábados con extras estructurales',
+          `${nf(sab.acotadas)} de ${nf(sab.total)} sábados con dotación acotada · ritmo ${nf(sab.ritmo, 1)} bult/h`,
+          'Política: cerrar sábados y abrir solo cada 15 días cuando hay que cumplir la pendiente',
+        ])
+      }
+      if (tnR != null && ttR != null) {
+        hallazgos.push([
+          '6 · Turno noche con ritmo más bajo',
+          `TN ${nf(tnR, 1)} vs TT ${nf(ttR, 1)} bult/h (brecha ${nf(((ttR - tnR) / ttR) * 100, 1)}%)`,
+          'Prearmado nocturno, sincronizar apros y capacitación específica del turno',
+        ])
+      }
+      if (extrasPct != null) {
+        hallazgos.push([
+          '7 · Horas extra: caras y sostenidas',
+          `${nf(extrasPct, 1)}% de los bultos se prepara en extra · ${nf(extrasH)} h extra del período`,
+          'La meta de productividad (+10%) permite absorber esa demanda dentro de la jornada',
+        ])
+      }
+      const filasDiag: Fila[] = [filaHeader(['Hallazgo', 'Dato', 'Implicancia'])]
+      hallazgos.forEach((hh, i) => filasDiag.push(filaDatos(hh, i % 2 === 1)))
+      s.addTable(filasDiag, { x: 0.45, y: 1.4, w: 12.4, colW: [3.9, 3.4, 5.1], border: { type: 'solid', pt: 0.5, color: BORDE }, rowH: 0.62, valign: 'middle', margin: 0.05, fontSize: 10 })
+      notaPie(s, 'Fuente: H61, Tiempos muertos, E-8, Maquinistas y Ola del período. Los focos están ordenados por impacto sobre la productividad y el costo operativo.', 7.15)
+    }
+
+    // ============ S11 · PLAN DE ACCIÓN ============
+    {
+      const s = pptx.addSlide()
+      tituloSlide(s, '10', 'Plan de acción — medidas concretas', 'Cada acción con su métrica objetivo, impacto estimado y plazo.')
+      const esperaCat = tm.porCategoria.find((c) => c.categoria === 'ESPERA PICKING')
+      const esperaH = esperaCat ? esperaCat.minutos / 60 : 0
+      const muertosSector = picking.vacio ? [] : picking.muertoPorSector ?? []
+      const xd = muertosSector.find((x) => x.sector.toUpperCase().includes('XD'))
+      const extrasH = cap.resumen?.horasExtras ?? 0
+      const acciones: [string, string, string, string][] = [
+        [
+          'A1 · Reabastecimiento preventivo en las horas de mayor espera de piking (reposición adelantada según el mapa de calor horario)',
+          `Espera de piking −50% (≈ −${nf(esperaH / 2)} h del período)`,
+          '≈ 6 personas-turno recuperadas por mes para preparar',
+          '30 días',
+        ],
+        [
+          'A2 · Mover apros de maquinistas a las franjas valle detectadas en el cruce movimientos × espera (ya medido en el Resumen)',
+          'Movimientos de apro en horas pico de espera +30%',
+          'Menos pasillos bloqueados: menos espera de piking',
+          '15 días',
+        ],
+        [
+          'A3 · Auditar el circuito XD: medición, asignación de personas y mix (hoy la mayor parte de su jornada es tiempo muerto)',
+          xd ? `XD: tiempo muerto de ${nf(xd.pctJornada, 1)}% a menos de 25%` : 'XD: tiempo muerto < 25%',
+          xd ? `≈ ${nf((xd.minutosTotal / 60) * 0.4, 1)} h productivas recuperadas` : 'Horas productivas recuperadas',
+          '15 días',
+        ],
+        [
+          'A4 · Política de sábados: cerrados por defecto, abrir solo cada 15 días cuando la pendiente acumulada lo exige (Planificación Diaria)',
+          'Bultos en extras de sábado → 0 salvo sábados autorizados',
+          `Reduce las ${nf(extrasH)} h extra del período`,
+          'Inmediato',
+        ],
+        [
+          'A5 · Plan de ritmo para el TN: prearmado nocturno, apros sincronizados y capacitación (hoy es el turno más lento)',
+          'TN: cerrar la brecha con el TT (objetivo +10% de ritmo)',
+          'Menos dotación nocturna para la misma demanda',
+          '60 días',
+        ],
+        [
+          'A6 · Planificar la ola día por día con la meta de productividad (+5/+10/+15/+20%) en la pestaña Planificación Diaria, verificando el tope de 90 máquinas (100 de tope)',
+          'Personas-turno −10% para la misma ola',
+          'La misma dotación cubre más demanda sin abrir sábados',
+          'Continuo',
+        ],
+      ]
+      const filasAcc: Fila[] = [filaHeader(['Acción', 'Métrica objetivo', 'Impacto estimado', 'Plazo'])]
+      acciones.forEach((a, i) => filasAcc.push(filaDatos(a, i % 2 === 1)))
+      s.addTable(filasAcc, { x: 0.45, y: 1.4, w: 12.4, colW: [5.4, 3.1, 2.5, 1.4], border: { type: 'solid', pt: 0.5, color: BORDE }, rowH: 0.78, valign: 'middle', margin: 0.05, fontSize: 10 })
+      notaPie(s, 'Seguimiento sugerido: revisar semanalmente la espera de piking y el ritmo por turno en el Resumen; la Planificación Diaria se actualiza con cada carga de datos.', 7.15)
+    }
+
     // devolver el archivo
     const buf = (await pptx.write({ outputType: 'nodebuffer' })) as unknown as Buffer
     return new NextResponse(new Uint8Array(buf), {

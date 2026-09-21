@@ -1,11 +1,12 @@
 'use client'
 
 import { useState } from 'react'
-import { BarChart3, UploadCloud, FlaskConical } from 'lucide-react'
+import { BarChart3, UploadCloud, FlaskConical, CalendarRange } from 'lucide-react'
 import Image from 'next/image'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ResumenTab } from '@/components/dash/resumen'
 import { ModeloTab } from '@/components/dash/modelo'
+import { PlanDiariaTab } from '@/components/dash/plan-diaria'
 import { CargaDatosTab } from '@/components/dash/cargadatos'
 
 export default function Home() {
@@ -25,7 +26,7 @@ export default function Home() {
           />
           <div className="min-w-0 border-l pl-3">
             <h1 className="text-base sm:text-lg font-bold leading-tight">Planificación — Preparación CD</h1>
-            <p className="text-xs text-muted-foreground leading-tight">Ola · Capacidad H61 · Productividad · Maquinistas · Tiempos muertos · Modelo de dotación</p>
+            <p className="text-xs text-muted-foreground leading-tight">Ola · Capacidad H61 · Productividad · Maquinistas · Tiempos muertos · Modelo de dotación · Planificación diaria</p>
           </div>
         </div>
       </header>
@@ -35,11 +36,13 @@ export default function Home() {
           <TabsList className="flex flex-wrap h-auto gap-1 justify-start">
             <TabsTrigger value="resumen" className="gap-1.5"><BarChart3 className="h-4 w-4" /> Resumen</TabsTrigger>
             <TabsTrigger value="modelo" className="gap-1.5"><FlaskConical className="h-4 w-4" /> Modelo de Planificación</TabsTrigger>
+            <TabsTrigger value="plan-diaria" className="gap-1.5"><CalendarRange className="h-4 w-4" /> Planificación Diaria</TabsTrigger>
             <TabsTrigger value="carga" className="gap-1.5"><UploadCloud className="h-4 w-4" /> Carga de Datos</TabsTrigger>
           </TabsList>
 
           <TabsContent value="resumen"><ResumenTab onIrACarga={() => setTab('carga')} /></TabsContent>
           <TabsContent value="modelo"><ModeloTab /></TabsContent>
+          <TabsContent value="plan-diaria"><PlanDiariaTab /></TabsContent>
           <TabsContent value="carga"><CargaDatosTab /></TabsContent>
         </Tabs>
       </main>

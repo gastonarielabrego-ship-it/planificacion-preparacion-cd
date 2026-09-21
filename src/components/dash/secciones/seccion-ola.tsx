@@ -7,7 +7,7 @@
 import { useMemo } from 'react'
 import { Waves, ClipboardList, TrendingUp, Equal } from 'lucide-react'
 import { Kpi, SinDatos } from '../kpi'
-import { n, COLORES } from '@/lib/client'
+import { n, n1, COLORES } from '@/lib/client'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, ReferenceLine, ComposedChart, Line } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -36,7 +36,7 @@ function mediana(vals: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
 }
 
-export function SeccionOla({ serie }: { serie: DiaOla[] }) {
+export function SeccionOla({ serie, perfilHora }: { serie: DiaOla[]; perfilHora?: { hora: number; etiqueta: string; bultosProm: number }[] }) {
   // ---- por día de la semana: promedio y mediana ----
   const porDiaSem = useMemo(() => {
     const ag = new Map<string, { olaVals: number[]; pendVals: number[]; totVals: number[] }>()
@@ -89,6 +89,15 @@ export function SeccionOla({ serie }: { serie: DiaOla[] }) {
   const promOla = conOla.length ? conOla.reduce((a, s) => a + s.ola, 0) / conOla.length : null
   const medOla = conOla.length ? mediana(conOla.map((s) => s.ola)) : null
   const totalPend = serie.reduce((a, s) => a + s.pendiente, 0)
+
+  // ---- perfil horario de la preparación (histórico H61): cuándo se prepara lo que llega por día ----
+  const perfilHorario = useMemo(() => {
+    if (!perfilHora?.length) return []
+    const suma = perfilHora.reduce((a, p) => a + p.bultosProm, 0)
+    return perfilHora
+      .filter((p) => p.bultosProm > 0)
+      .map((p) => ({ ...p, pct: suma > 0 ? (p.bultosProm / suma) * 100 : 0 }))
+  }, [perfilHora])
 
   if (!serie.length) return <SinDatos mensaje="Cargá el archivo de Ola y Pendiente para ver el análisis de la ola." />
 
@@ -151,6 +160,32 @@ export function SeccionOla({ serie }: { serie: DiaOla[] }) {
           </CardContent>
         </Card>
       </div>
+
+      {perfilHorario.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Perfil horario de la preparación (histórico)</CardTitle>
+            <CardDescription>Cómo se distribuye a lo largo del día lo que se prepara (archivo H61): es la forma en que la ola del día se convierte en bultos por hora</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={280}>
+              <ComposedChart data={perfilHorario} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={1} />
+                <YAxis yAxisId="b" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                <YAxis yAxisId="p" orientation="right" tick={{ fontSize: 10 }} unit="%" />
+                <Tooltip formatter={(v: number, nombre: string) => (nombre === '% del día' ? [`${n1(v)}%`, nombre] : [n(v), nombre])} />
+                <Legend />
+                <Bar yAxisId="b" dataKey="bultosProm" name="Bultos preparados promedio por hora" fill={COLORES[0]} radius={[2, 2, 0, 0]} />
+                <Line yAxisId="p" dataKey="pct" name="% del día" stroke={COLORES[2]} strokeWidth={2} dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+            <p className="text-xs text-muted-foreground mt-2">
+              El archivo de Ola es diario (no viene por hora): este perfil horario histórico es el que usa la pestaña <b>Planificación Diaria</b> para repartir la ola del día hora por hora y calcular las personas necesarias en cada franja.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-2">

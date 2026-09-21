@@ -101,7 +101,7 @@ export function ResumenTab({ onIrACarga }: { onIrACarga: () => void }) {
       {/* 1. OLA */}
       <section className="space-y-4">
         <TituloSeccion icono={Waves} titulo="1 · Ola — ¿cuánto hay que preparar por día?" detalle="Comportamiento de la ola por día de semana y por mes, con promedio y mediana, para entender el macro de lo que llega a preparar" />
-        {ola.isLoading ? <SkeletonSeccion /> : ola.error ? <SinDatos mensaje={`Error: ${(ola.error as Error).message}`} /> : <SeccionOla serie={ola.data?.serie ?? []} />}
+        {ola.isLoading ? <SkeletonSeccion /> : ola.error ? <SinDatos mensaje={`Error: ${(ola.error as Error).message}`} /> : <SeccionOla serie={ola.data?.serie ?? []} perfilHora={capacidad.data?.perfilHora} />}
       </section>
 
       {/* 2. CAPACIDAD H61 */}
