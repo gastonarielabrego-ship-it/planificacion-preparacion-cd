@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
   // "Cannot read properties of undefined (reading 'utils')" en CSV UTF-16/UTF-8
   // con caracteres especiales y en otros formatos de texto. Externo = se usa
   // node_modules como en node puro, donde funciona.
-  serverExternalPackages: ["xlsx"],
+  serverExternalPackages: ["xlsx", "pptxgenjs"],
 };
 
 export default nextConfig;

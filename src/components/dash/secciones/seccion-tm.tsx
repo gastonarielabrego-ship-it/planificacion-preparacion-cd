@@ -8,7 +8,7 @@
 import { TriangleAlert, Timer, Warehouse, Boxes, CalendarClock } from 'lucide-react'
 import { Kpi, SinDatos } from '../kpi'
 import { n, n1, pct, horasHMin, COLORES, GG_VERDE, GG_NARANJA, GG_GRIS } from '@/lib/client'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, Cell, ComposedChart, Line } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, ComposedChart, Line, AreaChart, Area } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -134,23 +134,27 @@ export function SeccionTiemposMuertos({ data, horasH61 }: { data: TMData; horasH
           </CardContent>
         </Card>
 
-        {/* Por hora del dia */}
+        {/* Por hora del dia: SOLO espera de piking */}
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Tiempo muerto por hora del día</CardTitle>
-            <CardDescription>Cuándo ocurre el tiempo muerto; la línea roja marca la espera de piking por hora (cruce con movimientos de clark en la sección Maquinistas)</CardDescription>
+            <CardTitle className="text-base">Espera de piking por hora del día</CardTitle>
+            <CardDescription>Cuándo se concentra la espera de piking a lo largo del día (cruce con movimientos de clark en la sección Maquinistas)</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={240}>
-              <ComposedChart data={data.porHora.map((h, i) => ({ ...h, espera: data.porHoraEsperaPiking[i]?.minutos ?? 0 }))} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+              <AreaChart data={data.porHoraEsperaPiking} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="gradEspera" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#dc2626" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#dc2626" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={2} />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 60)}h`} />
                 <Tooltip formatter={(v: number) => horasHMin(v)} />
-                <Legend />
-                <Bar dataKey="minutos" name="Todo el tiempo muerto" fill={GG_GRIS} radius={[2, 2, 0, 0]} />
-                <Line dataKey="espera" name="Espera de piking" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </ComposedChart>
+                <Area dataKey="minutos" name="Espera de piking" stroke="#dc2626" strokeWidth={2} fill="url(#gradEspera)" dot={false} />
+              </AreaChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>

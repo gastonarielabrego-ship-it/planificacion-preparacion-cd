@@ -61,7 +61,7 @@ export function ResumenTab({ onIrACarga }: { onIrACarga: () => void }) {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `Informe_Preparacion_CD_${new Date().toISOString().slice(0, 10)}.xlsx`
+      a.download = `Informe_Preparacion_CD_${new Date().toISOString().slice(0, 10)}.pptx`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -85,7 +85,7 @@ export function ResumenTab({ onIrACarga }: { onIrACarga: () => void }) {
         </p>
         <Button onClick={descargarInforme} disabled={descargando} className="bg-[#7CB93E] hover:bg-[#5C9429] text-white">
           {descargando ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileDown className="h-4 w-4 mr-2" />}
-          Descargar informe (Excel)
+          Descargar informe (PowerPoint)
         </Button>
       </div>
 
