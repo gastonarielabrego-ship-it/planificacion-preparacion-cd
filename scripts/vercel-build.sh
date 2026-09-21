@@ -11,7 +11,12 @@ if [ -n "$POSTGRES_PRISMA_URL" ] || { [ -n "$DATABASE_URL" ] && echo "$DATABASE_
   # staging descartable fuera del camino antes del push (libera espacio y evita
   # recreaciones in-place con la base llena; ver scripts/prepush-neon.cjs)
   node scripts/prepush-neon.cjs || true
-  npx prisma db push --accept-data-loss --skip-generate
+  # db push solo hace falta para CREAR tablas si faltan; si la base no es
+  # alcanzable (cuota de transferencia de Neon agotada, outage, IP allowlist)
+  # NO debe romper el deploy: las tablas ya existen y la app es quien va a
+  # reconectar en runtime.
+  npx prisma db push --accept-data-loss --skip-generate \
+    || echo "AVISO: base inaccesible durante el build; se omite db push y se continúa (las tablas ya existen)"
 else
   echo "== Sin base Postgres configurada: build sin tocar la base =="
   npx prisma generate
