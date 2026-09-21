@@ -53,6 +53,10 @@ function limpiar(tabla: string, r: Record<string, unknown>): Record<string, unkn
     if (!r.circuito) return null
     return { fecha: f, circuito: String(r.circuito), funcion: String(r.funcion ?? '?'), bultos: nro(r.bultos) }
   }
+  if (tabla === 'h61actividad') {
+    if (!r.actividad) return null
+    return { fecha: f, actividad: String(r.actividad), bultos: nro(r.bultos), operarios: nro(r.operarios), horas: nro(r.horas) }
+  }
   if (tabla === 'tm') {
     if (!r.operario) return null
     const code = r.motivoCode == null || r.motivoCode === '' ? null : nro(r.motivoCode)
@@ -84,6 +88,7 @@ async function borrar(tabla: string) {
   else if (tabla === 'h61opdia') await db.h61OpDia.deleteMany({})
   else if (tabla === 'h61turnohora') await db.h61TurnoHora.deleteMany({})
   else if (tabla === 'h61circuito') await db.h61Circuito.deleteMany({})
+  else if (tabla === 'h61actividad') await db.h61Actividad.deleteMany({})
   else if (tabla === 'tm') await db.tiempoMuerto.deleteMany({})
 }
 
@@ -91,7 +96,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as Body
     const tabla = body.tabla ?? ''
-    if (!['ola', 'h61opdia', 'h61turnohora', 'h61circuito', 'tm'].includes(tabla)) {
+    if (!['ola', 'h61opdia', 'h61turnohora', 'h61circuito', 'h61actividad', 'tm'].includes(tabla)) {
       return NextResponse.json({ error: 'tabla invalida' }, { status: 400 })
     }
     if (!Array.isArray(body.rows)) return NextResponse.json({ error: 'falta rows[]' }, { status: 400 })
@@ -113,6 +118,7 @@ export async function POST(req: NextRequest) {
       else if (tabla === 'h61opdia') await db.h61OpDia.createMany({ data: c as never })
       else if (tabla === 'h61turnohora') await db.h61TurnoHora.createMany({ data: c as never })
       else if (tabla === 'h61circuito') await db.h61Circuito.createMany({ data: c as never })
+      else if (tabla === 'h61actividad') await db.h61Actividad.createMany({ data: c as never })
       else await db.tiempoMuerto.createMany({ data: c as never })
     }
 
