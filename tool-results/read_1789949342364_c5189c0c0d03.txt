@@ -1,0 +1,699 @@
+     1→'use client'
+     2→
+     3→// Pestaña "Capacidad H61": ritmo de preparación mensual (promedio y mediana),
+     4→// días / actividades / personas, y separación de bultos preparados sin horas
+     5→// extra (primeras 8 h de cada operario) versus preparados en horas extra.
+     6→
+     7→import { useMemo, useState } from 'react'
+     8→import { useQuery } from '@tanstack/react-query'
+     9→import { Gauge, Hourglass, Layers, Users, CalendarOff } from 'lucide-react'
+    10→import { Kpi, SinDatos } from './kpi'
+    11→import { fetchDatos, n, n1, pct, fechaCorta, COLORES } from '@/lib/client'
+    12→import { ComposedChart, BarChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, Cell } from 'recharts'
+    13→import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+    14→import { Skeleton } from '@/components/ui/skeleton'
+    15→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    16→import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+    17→import { ScrollArea } from '@/components/ui/scroll-area'
+    18→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+    19→import { Badge } from '@/components/ui/badge'
+    20→
+    21→interface FilaMes {
+    22→  mes: string
+    23→  dias: number
+    24→  diasFeriado: number
+    25→  actividades: number
+    26→  personas: number
+    27→  personasExtras: number
+    28→  bultos: number
+    29→  bultosBase: number
+    30→  bultosExtras: number
+    31→  bultosFeriado: number
+    32→  pctExtras: number
+    33→  pctExtrasTotal: number
+    34→  horas: number
+    35→  horasExtras: number
+    36→  ritmoProm: number | null
+    37→  ritmoMediana: number | null
+    38→}
+    39→interface CapacidadData {
+    40→  serie: { fecha: string; bultos: number; bultosNormales: number; bultosBase: number; bultosExtras: number; bultosFeriado: number; pctExtras: number; ritmo: number | null; ops: number; opsExtras: number; opDias: number; esFeriado: boolean; feriado: string | null; feriadoManana: string | null }[]
+    41→  porMes: FilaMes[]
+    42→  porTurno: { turno: string; nombre: string; opDias: number; personas: number; personasExtras: number; bultos: number; bultosBase: number; bultosExtras: number; pctExtras: number; horasExtras: number; ritmoProm: number | null }[]
+    43→  perfilHora: { hora: number; etiqueta: string; opsJornada: number; opsExtras: number; bultosProm: number }[]
+    44→  feriados: { fecha: string; nombre: string; tipo: string; personas: number; opDias: number; bultos: number; horas: number; ritmo: number | null }[]
+    45→  resumen: {
+    46→    dias: number
+    47→    actividades: number
+    48→    personas: number
+    49→    personasExtras: number
+    50→    bultos: number
+    51→    bultosBase: number
+    52→    bultosExtras: number
+    53→    pctExtras: number
+    54→    horas: number
+    55→    horasExtras: number
+    56→    ritmoProm: number | null
+    57→    ritmoMediana: number | null
+    58→    diasFeriado: number
+    59→    bultosFeriado: number
+    60→    horasFeriado: number
+    61→    personasFeriado: number
+    62→    pctExtrasTotal: number
+    63→  } | null
+    64→  tieneOpHora: boolean
+    65→  comparativa: {
+    66→    normal: { dias: number; bultosPorDia: number; personasPorDia: number; horasPorDia: number; ritmo: number | null }
+    67→    feriado: { dias: number; bultosPorJornada: number; personasPorJornada: number; horasPorJornada: number; ritmo: number | null }
+    68→    deltas: { bultosPct: number | null; personasPct: number | null; horasPct: number | null; ritmoPct: number | null }
+    69→    perfilHora: { hora: number; etiqueta: string; bultosNormal: number; personasNormal: number; ritmoNormal: number | null; bultosFeriado: number; personasFeriado: number; ritmoFeriado: number | null }[]
+    70→    diasNormalesPerfil: number
+    71→    diasFeriadoPerfil: number
+    72→  } | null
+    73→  porDiaSemana: { dow: number; dia: string; dias: number; bultosProm: number; personasProm: number; horasProm: number; ritmo: number | null; ritmoMediana: number | null; pctExtras: number }[]
+    74→  sabados: { fecha: string; bultos: number; bultosNormales: number; personas: number; personasExtras: number; opDias: number; horas: number; ritmo: number | null; pctExtras: number; bultosFeriado: number; feriadoManana: string | null; esFeriado: boolean; dotacionAcotada: boolean }[]
+    75→  sabadosResumen: { total: number; personasMediana: number; acotadas: number; personasAcotadasProm: number | null; personasRestoProm: number | null; ritmo: number | null } | null
+    76→  porActividad: { actividad: string; bultos: number; dias: number; bultosPorDia: number; opDias: number; horas: number; ritmo: number | null; pct: number }[]
+    77→  tieneActividad: boolean
+    78→}
+    79→
+    80→// Caja de comparación: valor de un día normal contra el de una jornada feriada
+    81→function CajaComparativa({ titulo, normal, feriado, delta, unidad, decimales }: {
+    82→  titulo: string
+    83→  normal: number | null
+    84→  feriado: number | null
+    85→  delta: number | null
+    86→  unidad?: string
+    87→  decimales?: boolean
+    88→}) {
+    89→  const fmtV = (v: number | null) => (decimales ? n1(v) : n(v))
+    90→  return (
+    91→    <div className="rounded-lg border p-3 space-y-2">
+    92→      <p className="text-xs text-muted-foreground">{titulo}</p>
+    93→      <div className="flex items-end gap-3">
+    94→        <div>
+    95→          <p className="text-[11px] font-medium text-emerald-700">Día normal</p>
+    96→          <p className="text-xl font-bold tabular-nums">{fmtV(normal)}<span className="text-xs font-normal text-muted-foreground"> {unidad}</span></p>
+    97→        </div>
+    98→        <div className="border-l pl-3">
+    99→          <p className="text-[11px] font-medium text-red-700">Feriado</p>
+   100→          <p className="text-xl font-bold tabular-nums text-red-700">{fmtV(feriado)}<span className="text-xs font-normal text-muted-foreground"> {unidad}</span></p>
+   101→        </div>
+   102→      </div>
+   103→      {delta !== null && (
+   104→        <Badge variant="outline" className={delta >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}>
+   105→          {delta >= 0 ? '+' : ''}{n1(delta)}% vs día normal
+   106→        </Badge>
+   107→      )}
+   108→    </div>
+   109→  )
+   110→}
+   111→
+   112→const MESES_ABR = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+   113→const etiquetaMes = (ym: string) => `${MESES_ABR[parseInt(ym.slice(5, 7), 10) - 1]} ${ym.slice(0, 4)}`
+   114→
+   115→// Etiqueta legible del código de actividad: 2 -> "Actividad 2", JAULA -> "Jaula"
+   116→const etiquetaActividad = (a: string) => {
+   117→  if (/^\d+$/.test(a)) return `Actividad ${a}`
+   118→  return a.charAt(0) + a.slice(1).toLowerCase()
+   119→}
+   120→
+   121→export function CapacidadTab() {
+   122→  const { data, isLoading } = useQuery({ queryKey: ['capacidad'], queryFn: () => fetchDatos<CapacidadData>('capacidad') })
+   123→  const meses = useMemo(() => (data?.porMes ?? []).map((m) => m.mes), [data])
+   124→  const [mes, setMes] = useState('todos')
+   125→
+   126→  const resumen = data?.resumen ?? null
+   127→  const filas = useMemo(() => (mes === 'todos' ? data?.porMes ?? [] : (data?.porMes ?? []).filter((m) => m.mes === mes)), [data, mes])
+   128→  const feriadosConActividad = useMemo(() => (mes === 'todos' ? data?.feriados ?? [] : (data?.feriados ?? []).filter((f) => f.fecha.startsWith(mes))), [data, mes])
+   129→  const comp = data?.comparativa ?? null
+   130→  const perfilComp = useMemo(() => (comp?.perfilHora ?? []).filter((p) => p.bultosNormal > 0 || p.bultosFeriado > 0 || p.personasNormal > 0 || p.personasFeriado > 0), [comp])
+   131→  const diasSemana = useMemo(() => (data?.porDiaSemana ?? []).filter((d) => d.dow >= 1 && d.dow <= 5), [data])
+   132→  const sab = data?.sabados ?? []
+   133→  const sabResumen = data?.sabadosResumen ?? null
+   134→
+   135→  // Perfil por hora: promedio de colaboradores por hora (jornada vs extras) + bultos promedio
+   136→  const perfil = useMemo(() => (data?.perfilHora ?? []).filter((p) => p.opsJornada > 0 || p.opsExtras > 0), [data])
+   137→
+   138→  if (isLoading) return <div className="grid gap-4"><Skeleton className="h-24" /><Skeleton className="h-72" /><Skeleton className="h-72" /></div>
+   139→  if (!data || !resumen || resumen.bultos + resumen.bultosFeriado === 0) return <SinDatos mensaje="Cargá el archivo H61 para ver el ritmo y la capacidad de preparación." />
+   140→
+   141→  return (
+   142→    <div className="space-y-4">
+   143→      <div className="flex flex-wrap items-center gap-2 justify-between">
+   144→        <Select value={mes} onValueChange={setMes}>
+   145→          <SelectTrigger className="w-[220px]"><SelectValue placeholder="Elegí un mes" /></SelectTrigger>
+   146→          <SelectContent className="max-h-72">
+   147→            <SelectItem value="todos">Todo el período</SelectItem>
+   148→            {[...meses].reverse().map((m) => <SelectItem key={m} value={m}>{etiquetaMes(m)}</SelectItem>)}
+   149→          </SelectContent>
+   150→        </Select>
+   151→      </div>
+   152→
+   153→      {/* KPIs principales */}
+   154→      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+   155→        <Kpi
+   156→          titulo="Bultos sin horas extra"
+   157→          valor={resumen.bultosBase}
+   158→          unidad="bultos"
+   159→          icono={Layers}
+   160→          tono="exito"
+   161→          detalle={`${pct(resumen.bultos ? 100 - resumen.pctExtras : null)} de la preparación total · dentro de la jornada del turno`}
+   162→        />
+   163→        <Kpi
+   164→          titulo="Bultos en horas extra"
+   165→          valor={resumen.bultosExtras}
+   166→          unidad="bultos"
+   167→          icono={Hourglass}
+   168→          tono="alerta"
+   169→          detalle={`${pct(resumen.pctExtrasTotal)} del total incluyendo feriados · ${n(resumen.horasExtras)} h extra + ${n(resumen.horasFeriado)} h de feriados`}
+   170→        />
+   171→        <Kpi
+   172→          titulo="Ritmo de preparación"
+   173→          valor={resumen.ritmoProm}
+   174→          formato="decimal"
+   175→          unidad="bultos/h"
+   176→          icono={Gauge}
+   177→          detalle={`Mediana de días: ${n1(resumen.ritmoMediana)} bultos/h`}
+   178→        />
+   179→        <Kpi
+   180→          titulo="Personas involucradas"
+   181→          valor={resumen.personas}
+   182→          unidad="operarios"
+   183→          icono={Users}
+   184→          detalle={`${n(resumen.actividades)} operario-días en ${resumen.dias} días · ${resumen.personasExtras} con extras`}
+   185→        />
+   186→      </div>
+   187→
+   188→      <Alert>
+   189→        <Hourglass className="h-4 w-4" />
+   190→        <AlertTitle>¿Cómo se separa jornada y horas extra?</AlertTitle>
+   191→        <AlertDescription>
+   192→          <p>
+   193→            Cada turno tiene su <b>ventana de jornada base</b>: <b>TM de 6 a 14</b>, <b>TT de 14 a 22</b> y <b>TN de 23 a 6</b> (7 h).
+   194→            Las horas trabajadas fuera de esa ventana cuentan como <b>extras</b>: el TM puede extenderse hasta las 18, el TT puede
+   195→            empezar sus extras a las 10 o pasar de las 22, y el TN desde las 18 o hasta las 10. La jornada del turno noche
+   196→            (las 23 del día + las 00 a 6 siguientes) se agrupa como un único día. El ritmo se mide en <b>bultos por hora-hombre</b>.
+   197→          </p>
+   198→          <p className="mt-2">
+   199→            Los <b>feriados nacionales</b> (calendario de Argentina) se miden aparte: todo lo producido en una
+   200→            jornada feriada cuenta como <b>horas extra</b> y <b>no influye</b> en los promedios, medianas ni perfiles
+   201→            de la medición normal. En el <b>turno noche</b> la jornada que antecede al feriado es la feriada:
+   202→            los bultos de la noche del día previo (23 a 6) se computan como feriado junto con los diurnos del día
+   203→            feriado; la noche del propio feriado (hacia el día siguiente) es jornada normal.
+   204→          </p>
+   205→        </AlertDescription>
+   206→      </Alert>
+   207→
+   208→      {/* Comparativa mensual: base vs extras vs feriados */}
+   209→      <Card>
+   210→        <CardHeader className="pb-2">
+   211→          <CardTitle className="text-base">Preparación por mes: sin extras vs horas extra vs feriados</CardTitle>
+   212→          <CardDescription>
+   213→            Bultos apilados: dentro de la jornada del turno (verde), en horas extra (ámbar) y en feriados (rojo, todo cuenta como extra). La línea marca el porcentaje de la preparación que dependió de extras, feriados incluidos. Los promedios y medianas de ritmo usan solo los días no feriados, y los bultos de feriado se asignan al mes del feriado (noche TN previa incluida)
+   214→          </CardDescription>
+   215→        </CardHeader>
+   216→        <CardContent>
+   217→          <ResponsiveContainer width="100%" height={340}>
+   218→            <ComposedChart data={filas.map((m) => ({ ...m, etiqueta: etiquetaMes(m.mes) }))} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+   219→              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+   220→              <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+   221→              <YAxis yAxisId="b" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+   222→              <YAxis yAxisId="p" orientation="right" domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
+   223→              <Tooltip formatter={(v: number, name: string) => (name.includes('%') ? [pct(v), name] : [n(v), name])} />
+   224→              <Legend />
+   225→              <Bar yAxisId="b" dataKey="bultosBase" name="Sin extras (jornada del turno)" stackId="a" fill={COLORES[0]} radius={[0, 0, 0, 0]} />
+   226→              <Bar yAxisId="b" dataKey="bultosExtras" name="En horas extra" stackId="a" fill={COLORES[1]} radius={[0, 0, 0, 0]} />
+   227→              <Bar yAxisId="b" dataKey="bultosFeriado" name="En feriados (todo es extra)" stackId="a" fill={COLORES[2]} radius={[3, 3, 0, 0]} />
+   228→              <Line yAxisId="p" dataKey="pctExtrasTotal" name="% en extras (incl. feriados)" stroke={COLORES[3]} strokeWidth={2} dot={false} />
+   229→            </ComposedChart>
+   230→          </ResponsiveContainer>
+   231→        </CardContent>
+   232→      </Card>
+   233→
+   234→      {/* Ritmo de preparación por día: lunes a viernes */}
+   235→      <Card>
+   236→        <CardHeader className="pb-2">
+   237→          <CardTitle className="text-base">Ritmo de preparación por día: lunes a viernes</CardTitle>
+   238→          <CardDescription>
+   239→            Medición normal de cada día de la semana (excluye jornadas feriadas y noches TN previas). Las barras marcan los bultos promedio de un día típico y la línea el ritmo (bultos por hora-hombre); la mediana refleja el día típico sin distorsión de picos. Los sábados se analizan aparte en la tarjeta siguiente
+   240→          </CardDescription>
+   241→        </CardHeader>
+   242→        <CardContent className="space-y-4">
+   243→          <ResponsiveContainer width="100%" height={280}>
+   244→            <ComposedChart data={diasSemana} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+   245→              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+   246→              <XAxis dataKey="dia" tick={{ fontSize: 11 }} />
+   247→              <YAxis yAxisId="b" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+   248→              <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} />
+   249→              <Tooltip />
+   250→              <Legend />
+   251→              <Bar yAxisId="b" dataKey="bultosProm" name="Bultos promedio del día" fill={COLORES[0]} radius={[3, 3, 0, 0]} />
+   252→              <Line yAxisId="r" dataKey="ritmo" name="Ritmo (bultos/h)" stroke={COLORES[3]} strokeWidth={2} />
+   253→            </ComposedChart>
+   254→          </ResponsiveContainer>
+   255→          <Table>
+   256→            <TableHeader>
+   257→              <TableRow>
+   258→                <TableHead>Día</TableHead>
+   259→                <TableHead className="text-right">Días</TableHead>
+   260→                <TableHead className="text-right">Bultos prom.</TableHead>
+   261→                <TableHead className="text-right">Personas prom.</TableHead>
+   262→                <TableHead className="text-right">Horas-hombre</TableHead>
+   263→                <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+   264→                <TableHead className="text-right">Mediana días</TableHead>
+   265→                <TableHead className="text-right">% extras</TableHead>
+   266→              </TableRow>
+   267→            </TableHeader>
+   268→            <TableBody>
+   269→              {(data.porDiaSemana ?? []).map((d) => (
+   270→                <TableRow key={d.dow} className={d.dow === 6 ? 'bg-sky-50/60' : undefined}>
+   271→                  <TableCell className="font-medium">
+   272→                    {d.dia}
+   273→                    {d.dow === 6 && <Badge variant="outline" className="ml-2 border-sky-200 bg-sky-50 text-sky-700">análisis aparte</Badge>}
+   274→                  </TableCell>
+   275→                  <TableCell className="text-right tabular-nums">{d.dias}</TableCell>
+   276→                  <TableCell className="text-right tabular-nums">{n(d.bultosProm)}</TableCell>
+   277→                  <TableCell className="text-right tabular-nums">{n1(d.personasProm)}</TableCell>
+   278→                  <TableCell className="text-right tabular-nums">{n(d.horasProm)} h</TableCell>
+   279→                  <TableCell className="text-right tabular-nums font-semibold">{n1(d.ritmo)}</TableCell>
+   280→                  <TableCell className="text-right tabular-nums">{n1(d.ritmoMediana)}</TableCell>
+   281→                  <TableCell className="text-right tabular-nums">{pct(d.pctExtras)}</TableCell>
+   282→                </TableRow>
+   283→              ))}
+   284→            </TableBody>
+   285→          </Table>
+   286→        </CardContent>
+   287→      </Card>
+   288→
+   289→      {/* Sábados: dotación y ritmo */}
+   290→      {sab.length > 0 && sabResumen && (
+   291→        <Card>
+   292→          <CardHeader className="pb-2">
+   293→            <div className="flex items-center justify-between gap-2">
+   294→              <CardTitle className="text-base">Sábados: dotación y ritmo</CardTitle>
+   295→              {sabResumen.acotadas > 0 && <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">dotación acotada cada 15 días (cubren extras TT)</Badge>}
+   296→            </div>
+   297→            <CardDescription>
+   298→              {`${sabResumen.total} sábados con actividad · mediana de dotación ${n1(sabResumen.personasMediana)} personas · ritmo ${n1(sabResumen.ritmo)} bultos/h`}
+   299→              {sabResumen.acotadas > 0 && ` · ${sabResumen.acotadas} sábados operan con dotación acotada (promedio ${n1(sabResumen.personasAcotadasProm)} personas contra ${n1(sabResumen.personasRestoProm)} del resto): esos días la operación la cubre personal que viene del turno tarde como extras`}
+   300→            </CardDescription>
+   301→          </CardHeader>
+   302→          <CardContent className="space-y-4">
+   303→            <ResponsiveContainer width="100%" height={260}>
+   304→              <ComposedChart data={sab.map((s) => ({ ...s, etiqueta: fechaCorta(s.fecha) }))} margin={{ left: 4, right: 8, top: 12, bottom: 4 }}>
+   305→                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+   306→                <XAxis dataKey="etiqueta" tick={{ fontSize: 9 }} interval={0} angle={-35} textAnchor="end" height={54} />
+   307→                <YAxis yAxisId="p" tick={{ fontSize: 10 }} />
+   308→                <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} />
+   309→                <Tooltip />
+   310→                <Legend />
+   311→                <Bar yAxisId="p" dataKey="personas" name="Dotación (personas)" radius={[3, 3, 0, 0]}>
+   312→                  {sab.map((s) => <Cell key={s.fecha} fill={s.dotacionAcotada ? COLORES[2] : COLORES[0]} />)}
+   313→                </Bar>
+   314→                <Line yAxisId="r" dataKey="ritmo" name="Ritmo (bultos/h)" stroke={COLORES[3]} strokeWidth={2} />
+   315→              </ComposedChart>
+   316→            </ResponsiveContainer>
+   317→            <ScrollArea className="h-[300px] rounded-md border">
+   318→              <Table>
+   319→                <TableHeader className="sticky top-0 bg-background">
+   320→                  <TableRow>
+   321→                    <TableHead>Sábado</TableHead>
+   322→                    <TableHead className="text-right">Dotación</TableHead>
+   323→                    <TableHead className="text-right">c/ extras</TableHead>
+   324→                    <TableHead className="text-right">Bultos</TableHead>
+   325→                    <TableHead className="text-right">% extras</TableHead>
+   326→                    <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+   327→                  </TableRow>
+   328→                </TableHeader>
+   329→                <TableBody>
+   330→                  {sab.map((s) => (
+   331→                    <TableRow key={s.fecha} className={s.dotacionAcotada ? 'bg-red-50/60' : undefined}>
+   332→                      <TableCell className="font-medium whitespace-nowrap">
+   333→                        {fechaCorta(s.fecha)}
+   334→                        {s.dotacionAcotada && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100">dotación acotada</Badge>}
+   335→                        {s.esFeriado && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100" title={s.feriadoManana ?? undefined}>feriado</Badge>}
+   336→                        {!s.esFeriado && s.bultosFeriado > 0 && <Badge variant="outline" className="ml-1 border-red-200 bg-red-50 text-red-700" title={`Noche TN que antecede a ${s.feriadoManana ?? 'feriado'}`}>noche TN</Badge>}
+   337→                      </TableCell>
+   338→                      <TableCell className="text-right tabular-nums font-semibold">{s.personas}</TableCell>
+   339→                      <TableCell className="text-right tabular-nums">{s.personasExtras || '—'}</TableCell>
+   340→                      <TableCell className="text-right tabular-nums">{n(s.bultosNormales)}{s.bultosFeriado > 0 ? ` + ${n(s.bultosFeriado)} fer.` : ''}</TableCell>
+   341→                      <TableCell className="text-right tabular-nums">{pct(s.pctExtras)}</TableCell>
+   342→                      <TableCell className="text-right tabular-nums font-semibold">{n1(s.ritmo)}</TableCell>
+   343→                    </TableRow>
+   344→                  ))}
+   345→                </TableBody>
+   346→              </Table>
+   347→            </ScrollArea>
+   348→          </CardContent>
+   349→        </Card>
+   350→      )}
+   351→
+   352→      {/* Bultos por actividad (2 · 4 · jaula) */}
+   353→      <Card>
+   354→        <CardHeader className="pb-2">
+   355→          <CardTitle className="text-base">Bultos por actividad (2 · 4 · jaula)</CardTitle>
+   356→          <CardDescription>Desagregado de la preparación según la columna ACTIVIDAD del archivo H61. El ritmo usa horas-hombre aproximadas por actividad (un operario puede alternar actividades dentro del mismo día)</CardDescription>
+   357→        </CardHeader>
+   358→        <CardContent className="space-y-4">
+   359→          {!data.tieneActividad ? (
+   360→            <p className="text-sm text-muted-foreground py-4 text-center">
+   361→              El desagregado por actividad todavía no está disponible: volvé a cargar el archivo H61 (doble clic en CARGAR_ARCHIVOS.bat) para que el sistema procese la columna ACTIVIDAD.
+   362→            </p>
+   363→          ) : (
+   364→            <>
+   365→              <ResponsiveContainer width="100%" height={120 + 36 * data.porActividad.length}>
+   366→                <BarChart layout="vertical" data={data.porActividad.map((a) => ({ ...a, nombre: etiquetaActividad(a.actividad) }))} margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
+   367→                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+   368→                  <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+   369→                  <YAxis type="category" dataKey="nombre" width={110} tick={{ fontSize: 11 }} />
+   370→                  <Tooltip />
+   371→                  <Bar dataKey="bultos" name="Bultos" fill={COLORES[0]} radius={[0, 3, 3, 0]} />
+   372→                </BarChart>
+   373→              </ResponsiveContainer>
+   374→              <Table>
+   375→                <TableHeader>
+   376→                  <TableRow>
+   377→                    <TableHead>Actividad</TableHead>
+   378→                    <TableHead className="text-right">Bultos</TableHead>
+   379→                    <TableHead className="text-right">% del total</TableHead>
+   380→                    <TableHead className="text-right">Bultos por día</TableHead>
+   381→                    <TableHead className="text-right">Op-días</TableHead>
+   382→                    <TableHead className="text-right">Horas-hombre</TableHead>
+   383→                    <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+   384→                  </TableRow>
+   385→                </TableHeader>
+   386→                <TableBody>
+   387→                  {data.porActividad.map((a) => (
+   388→                    <TableRow key={a.actividad}>
+   389→                      <TableCell className="font-medium">{etiquetaActividad(a.actividad)}</TableCell>
+   390→                      <TableCell className="text-right tabular-nums">{n(a.bultos)}</TableCell>
+   391→                      <TableCell className="text-right tabular-nums">{pct(a.pct)}</TableCell>
+   392→                      <TableCell className="text-right tabular-nums">{n(a.bultosPorDia)}</TableCell>
+   393→                      <TableCell className="text-right tabular-nums">{n(a.opDias)}</TableCell>
+   394→                      <TableCell className="text-right tabular-nums">{n(a.horas)} h</TableCell>
+   395→                      <TableCell className="text-right tabular-nums font-semibold">{n1(a.ritmo)}</TableCell>
+   396→                    </TableRow>
+   397→                  ))}
+   398→                </TableBody>
+   399→              </Table>
+   400→            </>
+   401→          )}
+   402→        </CardContent>
+   403→      </Card>
+   404→
+   405→      {/* Producción en feriados: se mide aparte */}
+   406→      <Card>
+   407→        <CardHeader className="pb-2">
+   408→          <div className="flex items-center justify-between gap-2">
+   409→            <CardTitle className="text-base flex items-center gap-2"><CalendarOff className="h-4 w-4 text-red-600" /> Producción en feriados (medición aparte)</CardTitle>
+   410→            <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700">todo feriado = horas extra</Badge>
+   411→          </div>
+   412→          <CardDescription>
+   413→            Feriados nacionales de Argentina detectados automáticamente. Cada feriado reúne su jornada completa:
+   414→            la noche del turno noche previo (23 a 6) más los diurnos del día feriado. Su producción cuenta como
+   415→            horas extra y no influye en los promedios, medianas ni perfiles de la medición normal
+   416→          </CardDescription>
+   417→        </CardHeader>
+   418→        <CardContent className="space-y-4">
+   419→          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+   420→            <div className="rounded-lg border bg-red-50/40 p-3">
+   421→              <p className="text-xs text-muted-foreground">Bultos en feriados</p>
+   422→              <p className="text-xl font-bold text-red-700 tabular-nums">{n(resumen.bultosFeriado)}</p>
+   423→              <p className="text-xs text-muted-foreground">{pct(resumen.bultos + resumen.bultosFeriado ? (resumen.bultosFeriado / (resumen.bultos + resumen.bultosFeriado)) * 100 : 0)} de la producción total</p>
+   424→            </div>
+   425→            <div className="rounded-lg border p-3">
+   426→              <p className="text-xs text-muted-foreground">Feriados con actividad</p>
+   427→              <p className="text-xl font-bold tabular-nums">{resumen.diasFeriado}</p>
+   428→              <p className="text-xs text-muted-foreground">{n(resumen.horasFeriado)} horas-hombre trabajadas</p>
+   429→            </div>
+   430→            <div className="rounded-lg border p-3">
+   431→              <p className="text-xs text-muted-foreground">Personas que trabajaron</p>
+   432→              <p className="text-xl font-bold tabular-nums">{resumen.personasFeriado}</p>
+   433→              <p className="text-xs text-muted-foreground">operarios distintos</p>
+   434→            </div>
+   435→            <div className="rounded-lg border p-3">
+   436→              <p className="text-xs text-muted-foreground">Ritmo en feriados</p>
+   437→              <p className="text-xl font-bold tabular-nums">{n1(resumen.horasFeriado ? resumen.bultosFeriado / resumen.horasFeriado : null)}</p>
+   438→              <p className="text-xs text-muted-foreground">bultos por hora-hombre</p>
+   439→            </div>
+   440→          </div>
+   441→          {feriadosConActividad.length > 0 && (
+   442→            <Table>
+   443→              <TableHeader>
+   444→                <TableRow>
+   445→                  <TableHead>Feriado</TableHead>
+   446→                  <TableHead>Fecha</TableHead>
+   447→                  <TableHead>Tipo</TableHead>
+   448→                  <TableHead className="text-right">Personas</TableHead>
+   449→                  <TableHead className="text-right">Op-días</TableHead>
+   450→                  <TableHead className="text-right">Bultos</TableHead>
+   451→                  <TableHead className="text-right">Horas</TableHead>
+   452→                  <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+   453→                </TableRow>
+   454→              </TableHeader>
+   455→              <TableBody>
+   456→                {feriadosConActividad.map((f) => (
+   457→                  <TableRow key={f.fecha} className="bg-red-50/40">
+   458→                    <TableCell className="font-medium">{f.nombre}</TableCell>
+   459→                    <TableCell className="tabular-nums">{fechaCorta(f.fecha)}</TableCell>
+   460→                    <TableCell><Badge variant="secondary" className="capitalize">{f.tipo}</Badge></TableCell>
+   461→                    <TableCell className="text-right tabular-nums">{f.personas}</TableCell>
+   462→                    <TableCell className="text-right tabular-nums">{n(f.opDias)}</TableCell>
+   463→                    <TableCell className="text-right tabular-nums text-red-700">{n(f.bultos)}</TableCell>
+   464→                    <TableCell className="text-right tabular-nums">{n(f.horas)}</TableCell>
+   465→                    <TableCell className="text-right tabular-nums font-semibold">{n1(f.ritmo)}</TableCell>
+   466→                  </TableRow>
+   467→                ))}
+   468→              </TableBody>
+   469→            </Table>
+   470→          )}
+   471→          {feriadosConActividad.length === 0 && (
+   472→            <p className="text-sm text-muted-foreground text-center py-2">Sin producción en feriados en el período mostrado.</p>
+   473→          )}
+   474→        </CardContent>
+   475→      </Card>
+   476→
+   477→      {/* Feriado vs día normal: comparativa de producción */}
+   478→      {comp && comp.normal.dias > 0 && (
+   479→        <Card>
+   480→          <CardHeader className="pb-2">
+   481→            <div className="flex items-center justify-between gap-2">
+   482→              <CardTitle className="text-base flex items-center gap-2"><CalendarOff className="h-4 w-4 text-red-600" /> Feriado vs día normal: ¿cómo se compara la producción?</CardTitle>
+   483→              <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">mediciones separadas</Badge>
+   484→            </div>
+   485→            <CardDescription>
+   486→              La jornada feriada completa (noche TN previa + diurnos del feriado) contra el día normal promedio.
+   487→              {comp.feriado.dias > 0 ? (
+   488→                <> Un feriado típico produce <b>{n(comp.feriado.bultosPorJornada)}</b> bultos con <b>{n1(comp.feriado.personasPorJornada)}</b> personas y un ritmo de <b>{n1(comp.feriado.ritmo)}</b> bultos/h, frente a <b>{n(comp.normal.bultosPorDia)}</b> bultos, <b>{n1(comp.normal.personasPorDia)}</b> personas y <b>{n1(comp.normal.ritmo)}</b> bultos/h de un día normal</>
+   489→              ) : (
+   490→                <> Aún no hay producción en feriados en el período analizado</>
+   491→              )}
+   492→              {mes !== 'todos' && '. Las cajas y el perfil horario usan todo el período; los rankings respetan el filtro de mes'}
+   493→            </CardDescription>
+   494→          </CardHeader>
+   495→          <CardContent className="space-y-4">
+   496→            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+   497→              <CajaComparativa titulo="Bultos por jornada" normal={comp.normal.bultosPorDia} feriado={comp.feriado.bultosPorJornada} delta={comp.deltas.bultosPct} />
+   498→              <CajaComparativa titulo="Personas por jornada" normal={comp.normal.personasPorDia} feriado={comp.feriado.personasPorJornada} delta={comp.deltas.personasPct} decimales />
+   499→              <CajaComparativa titulo="Horas-hombre por jornada" normal={comp.normal.horasPorDia} feriado={comp.feriado.horasPorJornada} delta={comp.deltas.horasPct} unidad="h" />
+   500→              <CajaComparativa titulo="Ritmo (bultos por hora-hombre)" normal={comp.normal.ritmo} feriado={comp.feriado.ritmo} delta={comp.deltas.ritmoPct} decimales />
+   501→            </div>
+   502→
+   503→            {/* Productividad por hora: normal vs feriado */}
+   504→            <div>
+   505→              <p className="text-sm font-medium mb-1">Productividad de cada hora — días normales vs feriados</p>
+   506→              <p className="text-xs text-muted-foreground mb-2">Bultos promedio de cada hora (barras, promediando {comp.diasNormalesPerfil} días normales{comp.diasFeriadoPerfil > 0 ? ` contra ${comp.diasFeriadoPerfil} jornadas feriadas` : ''}) y ritmo de esa hora (bultos por persona activa, línea).</p>
+   507→              <ResponsiveContainer width="100%" height={320}>
+   508→                <ComposedChart data={perfilComp} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+   509→                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+   510→                  <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={1} />
+   511→                  <YAxis yAxisId="b" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+   512→                  <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} />
+   513→                  <Tooltip />
+   514→                  <Legend />
+   515→                  <Bar yAxisId="b" dataKey="bultosNormal" name="Bultos/hora — día normal" fill={COLORES[0]} radius={[2, 2, 0, 0]} />
+   516→                  {comp.diasFeriadoPerfil > 0 && <Bar yAxisId="b" dataKey="bultosFeriado" name="Bultos/hora — feriado" fill={COLORES[2]} radius={[2, 2, 0, 0]} />}
+   517→                  <Line yAxisId="r" dataKey="ritmoNormal" name="Ritmo por hora — normal" stroke={COLORES[3]} strokeWidth={2} dot={false} />
+   518→                  {comp.diasFeriadoPerfil > 0 && <Line yAxisId="r" dataKey="ritmoFeriado" name="Ritmo por hora — feriado" stroke={COLORES[2]} strokeWidth={2} strokeDasharray="4 3" dot={false} />}
+   519→                </ComposedChart>
+   520→              </ResponsiveContainer>
+   521→            </div>
+   522→          </CardContent>
+   523→        </Card>
+   524→      )}
+   525→
+   526→      {/* Preparación por turno */}
+   527→      <Card>
+   528→        <CardHeader className="pb-2">
+   529→          <CardTitle className="text-base">Preparación por turno</CardTitle>
+   530→          <CardDescription>Jornada base de cada turno (TM 6-14 · TT 14-22 · TN 23-06) y qué parte de su preparación dependió de extras. Las jornadas feriadas (días feriados y las noches TN que los anteceden) se miden aparte y no entran en esta tabla</CardDescription>
+   531→        </CardHeader>
+   532→        <CardContent>
+   533→          <Table>
+   534→            <TableHeader>
+   535→              <TableRow>
+   536→                <TableHead>Turno</TableHead>
+   537→                <TableHead className="text-right">Op-días</TableHead>
+   538→                <TableHead className="text-right">Personas</TableHead>
+   539→                <TableHead className="text-right">c/ extras</TableHead>
+   540→                <TableHead className="text-right">Bultos sin extras</TableHead>
+   541→                <TableHead className="text-right">Bultos en extras</TableHead>
+   542→                <TableHead className="text-right">% extras</TableHead>
+   543→                <TableHead className="text-right">Horas extra</TableHead>
+   544→                <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+   545→              </TableRow>
+   546→            </TableHeader>
+   547→            <TableBody>
+   548→              {(data.porTurno ?? []).map((t) => (
+   549→                <TableRow key={t.turno}>
+   550→                  <TableCell className="font-medium">{t.nombre}</TableCell>
+   551→                  <TableCell className="text-right tabular-nums">{n(t.opDias)}</TableCell>
+   552→                  <TableCell className="text-right tabular-nums">{t.personas}</TableCell>
+   553→                  <TableCell className="text-right tabular-nums">{t.personasExtras || '—'}</TableCell>
+   554→                  <TableCell className="text-right tabular-nums">{n(t.bultosBase)}</TableCell>
+   555→                  <TableCell className="text-right tabular-nums text-amber-700">{t.bultosExtras ? n(t.bultosExtras) : '—'}</TableCell>
+   556→                  <TableCell className="text-right tabular-nums font-semibold">{pct(t.pctExtras)}</TableCell>
+   557→                  <TableCell className="text-right tabular-nums">{n(t.horasExtras)}</TableCell>
+   558→                  <TableCell className="text-right tabular-nums font-semibold">{n1(t.ritmoProm)}</TableCell>
+   559→                </TableRow>
+   560→              ))}
+   561→            </TableBody>
+   562→          </Table>
+   563→        </CardContent>
+   564→      </Card>
+   565→
+   566→      {/* Colaboradores por hora: jornada vs extras */}
+   567→      <Card>
+   568→        <CardHeader className="pb-2">
+   569→          <CardTitle className="text-base">¿Cuántos colaboradores preparan en cada hora? — jornada vs extras</CardTitle>
+   570→          <CardDescription>
+   571→            Promedio de personas con producción en cada hora del día: en verde las que están dentro de sus primeras 8 h, en ámbar las que están en horas extra. La línea marca los bultos promedio de esa hora. No incluye las jornadas feriadas (días feriados ni las noches TN previas a cada feriado)
+   572→          </CardDescription>
+   573→        </CardHeader>
+   574→        <CardContent>
+   575→          {!data.tieneOpHora ? (
+   576→            <p className="text-sm text-muted-foreground py-8 text-center">
+   577→              Este gráfico necesita el detalle operario × hora. Volvé a cargar el archivo H61 para habilitarlo.
+   578→            </p>
+   579→          ) : (
+   580→            <ResponsiveContainer width="100%" height={320}>
+   581→              <ComposedChart data={perfil} margin={{ left: 4, right: 8, top: 12, bottom: 0 }}>
+   582→                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+   583→                <XAxis dataKey="etiqueta" tick={{ fontSize: 10 }} interval={1} />
+   584→                <YAxis yAxisId="ops" tick={{ fontSize: 10 }} />
+   585→                <YAxis yAxisId="bultos" orientation="right" tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+   586→                <Tooltip />
+   587→                <Legend />
+   588→                <Bar yAxisId="ops" dataKey="opsJornada" name="Personas en jornada (turno base)" stackId="ops" fill={COLORES[0]} radius={[0, 0, 0, 0]} />
+   589→                <Bar yAxisId="ops" dataKey="opsExtras" name="Personas en horas extra" stackId="ops" fill={COLORES[1]} radius={[3, 3, 0, 0]} />
+   590→                <Line yAxisId="bultos" dataKey="bultosProm" name="Bultos promedio por hora" stroke={COLORES[3]} strokeWidth={2} dot={false} />
+   591→              </ComposedChart>
+   592→            </ResponsiveContainer>
+   593→          )}
+   594→        </CardContent>
+   595→      </Card>
+   596→
+   597→      {/* Tabla mensual */}
+   598→      <Card>
+   599→        <CardHeader className="pb-2">
+   600→          <CardTitle className="text-base">Detalle mensual {mes !== 'todos' && `— ${etiquetaMes(mes)}`}</CardTitle>
+   601→          <CardDescription>Ritmo = bultos por hora-hombre (solo días no feriados). Promedio ponderado del mes y mediana de los días. La producción de feriados se lista aparte</CardDescription>
+   602→        </CardHeader>
+   603→        <CardContent>
+   604→          <ScrollArea className="h-[420px] rounded-md border">
+   605→            <Table>
+   606→              <TableHeader className="sticky top-0 bg-background">
+   607→                <TableRow>
+   608→                  <TableHead>Mes</TableHead>
+   609→                  <TableHead className="text-right">Días</TableHead>
+   610→                  <TableHead className="text-right">Feriados</TableHead>
+   611→                  <TableHead className="text-right">Actividades (op-días)</TableHead>
+   612→                  <TableHead className="text-right">Personas</TableHead>
+   613→                  <TableHead className="text-right">Bultos sin extras</TableHead>
+   614→                  <TableHead className="text-right">Bultos en extras</TableHead>
+   615→                  <TableHead className="text-right">Bultos feriado</TableHead>
+   616→                  <TableHead className="text-right">% extras</TableHead>
+   617→                  <TableHead className="text-right">Horas extra</TableHead>
+   618→                  <TableHead className="text-right">Ritmo prom.</TableHead>
+   619→                  <TableHead className="text-right">Mediana días</TableHead>
+   620→                </TableRow>
+   621→              </TableHeader>
+   622→              <TableBody>
+   623→                {filas.map((m) => (
+   624→                  <TableRow key={m.mes}>
+   625→                    <TableCell className="font-medium">{etiquetaMes(m.mes)}</TableCell>
+   626→                    <TableCell className="text-right tabular-nums">{m.dias}</TableCell>
+   627→                    <TableCell className="text-right tabular-nums text-red-700">{m.diasFeriado || '—'}</TableCell>
+   628→                    <TableCell className="text-right tabular-nums">{n(m.actividades)}</TableCell>
+   629→                    <TableCell className="text-right tabular-nums">{m.personas}</TableCell>
+   630→                    <TableCell className="text-right tabular-nums">{n(m.bultosBase)}</TableCell>
+   631→                    <TableCell className="text-right tabular-nums text-amber-700">{n(m.bultosExtras)}</TableCell>
+   632→                    <TableCell className="text-right tabular-nums text-red-700">{m.bultosFeriado ? n(m.bultosFeriado) : '—'}</TableCell>
+   633→                    <TableCell className="text-right tabular-nums font-semibold">{pct(m.pctExtrasTotal)}</TableCell>
+   634→                    <TableCell className="text-right tabular-nums">{n(m.horasExtras)}</TableCell>
+   635→                    <TableCell className="text-right tabular-nums font-semibold">{n1(m.ritmoProm)}</TableCell>
+   636→                    <TableCell className="text-right tabular-nums">{n1(m.ritmoMediana)}</TableCell>
+   637→                  </TableRow>
+   638→                ))}
+   639→              </TableBody>
+   640→            </Table>
+   641→          </ScrollArea>
+   642→        </CardContent>
+   643→      </Card>
+   644→
+   645→      {/* Detalle diario del mes elegido */}
+   646→      {mes !== 'todos' && (
+   647→        <Card>
+   648→          <CardHeader className="pb-2">
+   649→            <CardTitle className="text-base">Días de {etiquetaMes(mes)}</CardTitle>
+   650→            <CardDescription>Ritmo diario de preparación y cuánta gente trabajó con extras cada día. Los feriados (rojo) van todo a horas extra y no entran en la medición normal; la noche TN que antecede a un feriado se marca con “noche TN”</CardDescription>
+   651→          </CardHeader>
+   652→          <CardContent>
+   653→            <ScrollArea className="h-[360px] rounded-md border">
+   654→              <Table>
+   655→                <TableHeader className="sticky top-0 bg-background">
+   656→                  <TableRow>
+   657→                    <TableHead>Fecha</TableHead>
+   658→                    <TableHead className="text-right">Bultos</TableHead>
+   659→                    <TableHead className="text-right">Sin extras</TableHead>
+   660→                    <TableHead className="text-right">En extras</TableHead>
+   661→                    <TableHead className="text-right">En feriado</TableHead>
+   662→                    <TableHead className="text-right">% extras</TableHead>
+   663→                    <TableHead className="text-right">Personas</TableHead>
+   664→                    <TableHead className="text-right">c/ extras</TableHead>
+   665→                    <TableHead className="text-right">Ritmo (bultos/h)</TableHead>
+   666→                  </TableRow>
+   667→                </TableHeader>
+   668→                <TableBody>
+   669→                  {data.serie.filter((s) => s.fecha.startsWith(mes)).map((s) => (
+   670→                    <TableRow key={s.fecha} className={s.esFeriado || s.bultosFeriado > 0 ? 'bg-red-50/60' : s.opsExtras > 0 ? 'bg-amber-50/50' : undefined}>
+   671→                      <TableCell className="font-medium">
+   672→                        {fechaCorta(s.fecha)}{' '}
+   673→                        {s.esFeriado && <Badge className="ml-1 bg-red-100 text-red-800 hover:bg-red-100" title={s.feriado ?? undefined}>feriado</Badge>}
+   674→                        {!s.esFeriado && s.bultosFeriado > 0 && (
+   675→                          <Badge variant="outline" className="ml-1 border-red-200 bg-red-50 text-red-700" title={`Noche TN que antecede a ${s.feriadoManana ?? 'feriado'}: todo cuenta como extra`}>
+   676→                            noche TN
+   677→                          </Badge>
+   678→                        )}
+   679→                      </TableCell>
+   680→                      <TableCell className="text-right tabular-nums">{n(s.bultos)}</TableCell>
+   681→                      <TableCell className="text-right tabular-nums">{s.bultosBase ? n(s.bultosBase) : '—'}</TableCell>
+   682→                      <TableCell className="text-right tabular-nums text-amber-700">{s.bultosExtras ? n(s.bultosExtras) : '—'}</TableCell>
+   683→                      <TableCell className="text-right tabular-nums text-red-700">{s.bultosFeriado ? n(s.bultosFeriado) : '—'}</TableCell>
+   684→                      <TableCell className="text-right tabular-nums">{s.bultosNormales > 0 ? pct(s.pctExtras) : '—'}</TableCell>
+   685→                      <TableCell className="text-right tabular-nums">{s.ops}</TableCell>
+   686→                      <TableCell className="text-right tabular-nums">{s.opsExtras || '—'}</TableCell>
+   687→                      <TableCell className="text-right tabular-nums font-semibold">{n1(s.ritmo)}</TableCell>
+   688→                    </TableRow>
+   689→                  ))}
+   690→                </TableBody>
+   691→              </Table>
+   692→            </ScrollArea>
+   693→          </CardContent>
+   694→        </Card>
+   695→      )}
+   696→    </div>
+   697→  )
+   698→}
+   699→

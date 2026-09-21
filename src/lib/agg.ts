@@ -502,8 +502,10 @@ export async function getCapacidad(f: Filtros) {
   })
 
   // --- perfil por hora: colaboradores en jornada vs extras (promedio por dia) ---
-  type HoraAgg = { fechas: Set<string>; jornada: Map<string, Set<string>>; extras: Map<string, Set<string>>; bultos: Map<string, number> }
-  const horasAgg: HoraAgg[] = Array.from({ length: 24 }, () => ({ fechas: new Set<string>(), jornada: new Map(), extras: new Map(), bultos: new Map() }))
+  // Los bultos de cada hora se separan por si la hora fue jornada o extra: así la
+  // UI puede mostrar la productividad promedio por hora SIN extras y CON extras.
+  type HoraAgg = { fechas: Set<string>; jornada: Map<string, Set<string>>; extras: Map<string, Set<string>>; bultos: Map<string, number>; bultosJornada: Map<string, number>; bultosExtras: Map<string, number> }
+  const horasAgg: HoraAgg[] = Array.from({ length: 24 }, () => ({ fechas: new Set<string>(), jornada: new Map(), extras: new Map(), bultos: new Map(), bultosJornada: new Map(), bultosExtras: new Map() }))
   for (const r of oh) {
     const h = horasAgg[r.hora]
     if (!h) continue
@@ -517,18 +519,27 @@ export async function getCapacidad(f: Filtros) {
     if (!set) { set = new Set(); destino.set(k, set) }
     set.add(r.operario)
     h.bultos.set(k, (h.bultos.get(k) ?? 0) + r.bultos)
+    const bk = r.esExtra ? h.bultosExtras : h.bultosJornada
+    bk.set(k, (bk.get(k) ?? 0) + r.bultos)
   }
+  const sumaMapNum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0)
   const perfilHora = horasAgg.map((h, hora) => {
     const n = h.fechas.size
     const sumaJornada = [...h.jornada.values()].reduce((a, s) => a + s.size, 0)
     const sumaExtras = [...h.extras.values()].reduce((a, s) => a + s.size, 0)
-    const sumaBultos = [...h.bultos.values()].reduce((a, b) => a + b, 0)
+    const sumaBultos = sumaMapNum(h.bultos)
+    const bJornada = sumaMapNum(h.bultosJornada)
+    const bExtras = sumaMapNum(h.bultosExtras)
     return {
       hora,
       etiqueta: `${String(hora).padStart(2, '0')}:00`,
       opsJornada: n ? +(sumaJornada / n).toFixed(1) : 0,
       opsExtras: n ? +(sumaExtras / n).toFixed(1) : 0,
       bultosProm: n ? Math.round(sumaBultos / n) : 0,
+      bultosJornadaProm: n ? Math.round(bJornada / n) : 0,
+      bultosExtrasProm: n ? Math.round(bExtras / n) : 0,
+      ritmoJornada: sumaJornada >= 0.1 ? +(bJornada / sumaJornada).toFixed(1) : null,
+      ritmoExtras: sumaExtras >= 0.1 ? +(bExtras / sumaExtras).toFixed(1) : null,
     }
   })
 
@@ -955,6 +966,10 @@ export async function getPicking(f: Filtros) {
   // grano resumen (E-8 "Colaborador"): tiempos informados por bloque
   let conHoraTotal = 0, sumTotalRes = 0, sumMuertoRes = 0, sumNetoRes = 0, sumSuperRes = 0
   const muertoBloquesArr: number[] = []
+  // desglose del tiempo muerto informado: por sector (nave), por turno y calor dia x turno
+  const muertoSector = new Map<string, { muerto: number; total: number; bloques: number }>()
+  const muertoTurno = new Map<string, { muerto: number; bloques: number }>()
+  const muertoHeatMap = new Map<string, { suma: number; n: number }>()
 
   const porOp = new Map<string, { nombre: string | null; eventos: number; bultos: number; span: number; muerto: number; minutos: number; dias: number; cambioUbic: number; ubicUnicas: Set<string>; totalRes: number; muertoRes: number; netoRes: number; superRes: number }>()
   const porZona = new Map<string, { bultos: number; eventos: number; ops: Set<string>; dias: Set<string> }>()
@@ -1037,7 +1052,27 @@ export async function getPicking(f: Filtros) {
     for (const e of evs) {
       o.totalRes += e.minutos ?? 0
       sumTotalRes += e.minutos ?? 0
-      if (e.muertoMin != null) { o.muertoRes += e.muertoMin; sumMuertoRes += e.muertoMin; muertoBloquesArr.push(e.muertoMin) }
+      if (e.muertoMin != null) {
+        o.muertoRes += e.muertoMin; sumMuertoRes += e.muertoMin; muertoBloquesArr.push(e.muertoMin)
+        // desglose: sector/nave (Circuito del reporte), turno y dia de la semana
+        const sec = (e.circuito || e.actividad || '(sin sector)').toUpperCase()
+        let ms = muertoSector.get(sec)
+        if (!ms) { ms = { muerto: 0, total: 0, bloques: 0 }; muertoSector.set(sec, ms) }
+        ms.muerto += e.muertoMin
+        ms.total += e.minutos ?? 0
+        ms.bloques += 1
+        const tn = e.turno || '?'
+        let mt = muertoTurno.get(tn)
+        if (!mt) { mt = { muerto: 0, bloques: 0 }; muertoTurno.set(tn, mt) }
+        mt.muerto += e.muertoMin
+        mt.bloques += 1
+        const dw = new Date(fechaISO + 'T00:00:00.000Z').getUTCDay()
+        const kh = `${dw}|${tn}`
+        let mh = muertoHeatMap.get(kh)
+        if (!mh) { mh = { suma: 0, n: 0 }; muertoHeatMap.set(kh, mh) }
+        mh.suma += e.muertoMin
+        mh.n += 1
+      }
       if (e.netoMin != null) { o.netoRes += e.netoMin; sumNetoRes += e.netoMin }
       if (e.superNetoMin != null) { o.superRes += e.superNetoMin; sumSuperRes += e.superNetoMin }
     }
@@ -1211,6 +1246,41 @@ export async function getPicking(f: Filtros) {
     if (!prev || x.createdAt < prev.createdAt) fuentesPorNombre.set(k, x)
   }
 
+  // desglose del muerto (solo grano resumen con muerto informado)
+  const NOM_TURNO_PK: Record<string, string> = { M: 'TM (6 a 14)', T: 'TT (14 a 22)', N: 'TN (23 a 06)', '?': 'Sin turno' }
+  const conMuertoRes = granoResumen && sumMuertoRes > 0
+  const muertoPorSector = conMuertoRes
+    ? [...muertoSector.entries()].map(([sector, v]) => ({
+        sector,
+        minutosMuerto: Math.round(v.muerto),
+        minutosTotal: Math.round(v.total),
+        pctJornada: v.total ? r1((v.muerto / v.total) * 100) : null,
+        bloques: v.bloques,
+      })).sort((a, b) => b.minutosMuerto - a.minutosMuerto)
+    : []
+  const muertoPorTurno = conMuertoRes
+    ? [...muertoTurno.entries()].map(([turno, v]) => ({
+        turno,
+        nombre: NOM_TURNO_PK[turno] ?? turno,
+        minutosMuerto: Math.round(v.muerto),
+        bloques: v.bloques,
+        promedio: v.bloques ? r1(v.muerto / v.bloques) : null,
+      })).sort((a, b) => b.minutosMuerto - a.minutosMuerto)
+    : []
+  const muertoHeat = conMuertoRes
+    ? {
+        dias: ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'],
+        turnos: ['M', 'T', 'N'].filter((t) => muertoTurno.has(t)).map((tn) => ({
+          turno: tn,
+          nombre: NOM_TURNO_PK[tn] ?? tn,
+          valores: [1, 2, 3, 4, 5, 6, 0].map((dw) => {
+            const v = muertoHeatMap.get(`${dw}|${tn}`)
+            return v && v.n ? r1(v.suma / v.n) : null
+          }),
+        })),
+      }
+    : null
+
   return {
     registros: count,
     vacio: false as const,
@@ -1235,6 +1305,9 @@ export async function getPicking(f: Filtros) {
       distribucion: distBloque,
       conMuerto: muertoBloquesArr.length > 0,
     },
+    muertoPorSector,
+    muertoPorTurno,
+    muertoHeat,
     tiempos: {
       horasTotal: horas(spanTotal),
       horasMuerto: horas(muertoTotal),
@@ -1334,6 +1407,10 @@ export async function getMaquinistas(f: Filtros) {
   const horaTurno = new Map<string, number[]>()
   let tieneHorario = false
 
+  // ---- MOVIMIENTOS POR PERSONA POR MES (foco apros) + CALOR DE APROS MES x ACTIVIDAD ----
+  const movOpMes = new Map<string, { operario: string; nombre: string; mes: string; apros: number; homogeneos: number; total: number; bultos: number }>()
+  const aprosMesAct = new Map<string, { mov: number; ops: Set<string> }>()
+
   for (const rw of rows) {
     const fISO = dia(rw.fecha)
     diasSet.add(fISO)
@@ -1385,6 +1462,25 @@ export async function getMaquinistas(f: Filtros) {
         horaTotal[h] += v
         ht[h] += v
       }
+    }
+
+    // detalle por persona y mes (apros/homogéneos) y calor de apros por mes x actividad
+    const aprosRow = (rw as { apros?: number }).apros ?? 0
+    const homRow = (rw as { homogeneos?: number }).homogeneos ?? 0
+    const mesISO = fISO.slice(0, 7)
+    const kpm = `${rw.operario}|${mesISO}`
+    let pm = movOpMes.get(kpm)
+    if (!pm) { pm = { operario: rw.operario, nombre: rw.nombre ?? rw.operario, mes: mesISO, apros: 0, homogeneos: 0, total: 0, bultos: 0 }; movOpMes.set(kpm, pm) }
+    pm.apros += aprosRow
+    pm.homogeneos += homRow
+    pm.total += rw.total
+    pm.bultos += rw.bultos
+    if (aprosRow > 0) {
+      const kma = `${mesISO}|${rw.actividad}`
+      let m = aprosMesAct.get(kma)
+      if (!m) { m = { mov: 0, ops: new Set<string>() }; aprosMesAct.set(kma, m) }
+      m.mov += aprosRow
+      m.ops.add(rw.operario)
     }
   }
 
@@ -1676,6 +1772,23 @@ export async function getMaquinistas(f: Filtros) {
     porTurno: porTurnoOut,
     porMesActividad,
     porMesNave: porMesNaveFiltrado(mesNav, topNaves),
+    // detalle: movimientos por mes por persona (foco apros), top 300 por apros
+    movPorPersonaMes: [...movOpMes.values()].sort((a, b) => b.apros - a.apros || b.total - a.total).slice(0, 300),
+    // mapa de calor de apros: movimientos por mes x actividad + personas que los hicieron
+    calorApros: (() => {
+      const meses = [...new Set([...aprosMesAct.keys()].map((k) => k.split('|')[0]))].sort()
+      const actTot = new Map<string, number>()
+      for (const [k, v] of aprosMesAct) {
+        const act = k.split('|')[1]
+        actTot.set(act, (actTot.get(act) ?? 0) + v.mov)
+      }
+      const actividades = [...actTot.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => etiquetaAct(k))
+      const celdas = [...aprosMesAct.entries()].map(([k, v]) => {
+        const [mes, act] = k.split('|')
+        return { mes, actividad: etiquetaAct(act), mov: v.mov, personas: v.ops.size }
+      })
+      return { meses, actividades, celdas }
+    })(),
     tareas: {
       movApros,
       movHom,
@@ -1700,6 +1813,166 @@ function porMesNaveFiltrado(mesNav: Map<string, { dias: number; ops: number }>, 
       return { mes, nave: nave === 'XXX' ? 'Varias (XXX)' : nave === '?' ? 'Sin nave' : nave, personasProm: r1(v.ops / v.dias) }
     })
     .sort((a, b) => a.mes.localeCompare(b.mes) || a.nave.localeCompare(b.nave))
+}
+
+// ============ PLANIFICADOR (estimacion de dotacion segun la demanda) ============
+// Reune en un solo lugar todos los parametros de productividad medidos:
+// demanda (ola + pendiente), ritmos H61 (global / por turno / base / extras) y
+// productividades del E-8, mas el perfil horario promedio para planificar por hora.
+export async function getPlanificador() {
+  const [olaRows, ops, th, pickAgg] = await Promise.all([
+    db.olaDia.findMany({ orderBy: { fecha: 'asc' } }),
+    db.h61OpDia.findMany({ orderBy: { fecha: 'asc' } }),
+    db.h61TurnoHora.findMany(),
+    db.pickingEvento.aggregate({ _sum: { bultos: true, minutos: true, muertoMin: true, netoMin: true, superNetoMin: true } }),
+  ])
+
+  const med = (vals: number[]): number | null => {
+    if (!vals.length) return null
+    const s = [...vals].sort((a, b) => a - b)
+    const m = Math.floor(s.length / 2)
+    return s.length % 2 ? r1(s[m]) : r1((s[m - 1] + s[m]) / 2)
+  }
+  const prom = (vals: number[]): number | null => (vals.length ? r1(vals.reduce((a, b) => a + b, 0) / vals.length) : null)
+
+  // --- demanda: ola y pendiente por dia ---
+  const olaPorDia = new Map<string, { ola: number; pendiente: number }>()
+  for (const o of olaRows) {
+    const k = dia(o.fecha)
+    const cur = olaPorDia.get(k) ?? { ola: 0, pendiente: 0 }
+    cur.ola += o.ola ?? 0
+    cur.pendiente += o.pendiente ?? 0
+    olaPorDia.set(k, cur)
+  }
+  const diasConOla: number[] = []
+  const diasConPend: number[] = []
+  const diasTotales: number[] = []
+  for (const v of olaPorDia.values()) {
+    if (v.ola > 0) diasConOla.push(v.ola)
+    if (v.pendiente > 0) diasConPend.push(v.pendiente)
+    if (v.ola > 0 || v.pendiente > 0) diasTotales.push(v.ola + v.pendiente)
+  }
+  // promedio de demanda por dia de semana (lun-dom) para planificar cada dia
+  const DIAS_SEM_PL = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+  const semAgg = new Map<number, { ola: number[]; pend: number[]; tot: number[] }>()
+  for (const [k, v] of olaPorDia) {
+    if (v.ola <= 0 && v.pendiente <= 0) continue
+    const dw = new Date(k + 'T00:00:00.000Z').getUTCDay()
+    let s = semAgg.get(dw)
+    if (!s) { s = { ola: [], pend: [], tot: [] }; semAgg.set(dw, s) }
+    s.ola.push(v.ola)
+    s.pend.push(v.pendiente)
+    s.tot.push(v.ola + v.pendiente)
+  }
+  const porDiaSemana = [1, 2, 3, 4, 5, 6, 0].filter((d) => semAgg.has(d)).map((dw) => {
+    const s = semAgg.get(dw)!
+    return {
+      dow: dw,
+      dia: DIAS_SEM_PL[dw],
+      olaProm: Math.round(prom(s.ola) ?? 0),
+      olaMediana: med(s.ola),
+      pendProm: Math.round(prom(s.pend) ?? 0),
+      totalProm: Math.round(prom(s.tot) ?? 0),
+      totalMediana: med(s.tot),
+      dias: s.tot.length,
+    }
+  })
+
+  // --- H61: ritmos globales y por turno ---
+  let bultosTot = 0, horasTot = 0, extrasTot = 0, baseTot = 0, extrasBulTot = 0
+  const diasH61 = new Set<string>()
+  const turnoMap = new Map<string, { bultos: number; horas: number; extras: number; bultosBase: number; bultosExtras: number; dias: Map<string, Set<string>> }>()
+  for (const r of ops) {
+    const k = dia(r.fecha)
+    diasH61.add(k)
+    bultosTot += r.bultos
+    horasTot += r.horasActivas
+    extrasTot += r.extras
+    baseTot += r.bultosBase
+    extrasBulTot += r.bultosExtras
+    let t = turnoMap.get(r.turno)
+    if (!t) { t = { bultos: 0, horas: 0, extras: 0, bultosBase: 0, bultosExtras: 0, dias: new Map() }; turnoMap.set(r.turno, t) }
+    t.bultos += r.bultos
+    t.horas += r.horasActivas
+    t.extras += r.extras
+    t.bultosBase += r.bultosBase
+    t.bultosExtras += r.bultosExtras
+    let s = t.dias.get(k)
+    if (!s) { s = new Set(); t.dias.set(k, s) }
+    s.add(r.operario)
+  }
+  const NOMBRE_TURNO_PL: Record<string, string> = { M: 'TM (6 a 14)', T: 'TT (14 a 22)', N: 'TN (23 a 06)' }
+  const porTurno = [...turnoMap.entries()].sort().map(([turno, t]) => {
+    const dias = t.dias.size
+    const personasPromDia = dias ? r1([...t.dias.values()].reduce((a, s) => a + s.size, 0) / dias) : null
+    const horasBase = Math.max(0, t.horas - t.extras)
+    return {
+      turno,
+      nombre: NOMBRE_TURNO_PL[turno] ?? turno,
+      bultos: t.bultos,
+      bultosBase: t.bultosBase,
+      bultosExtras: t.bultosExtras,
+      horas: t.horas,
+      horasBase,
+      horasExtras: t.extras,
+      ritmo: t.horas ? r1(t.bultos / t.horas) : null,
+      ritmoBase: horasBase ? r1(t.bultosBase / horasBase) : null,
+      ritmoExtras: t.extras ? r1(t.bultosExtras / t.extras) : null,
+      personasPromDia,
+      pctExtras: t.bultos ? r1((t.bultosExtras / t.bultos) * 100) : 0,
+      dias,
+    }
+  })
+
+  // --- perfil horario promedio por dia (bultos de cada hora) ---
+  const horaFechas = new Map<number, Map<string, number>>()
+  for (const r of th) {
+    let m = horaFechas.get(r.hora)
+    if (!m) { m = new Map(); horaFechas.set(r.hora, m) }
+    m.set(dia(r.fecha), (m.get(dia(r.fecha)) ?? 0) + r.bultos)
+  }
+  const nDiasPerfil = new Set(th.map((r) => dia(r.fecha))).size
+  const perfilHora = Array.from({ length: 24 }, (_, hora) => {
+    const m = horaFechas.get(hora)
+    const suma = m ? [...m.values()].reduce((a, b) => a + b, 0) : 0
+    return {
+      hora,
+      etiqueta: `${String(hora).padStart(2, '0')}:00`,
+      bultosProm: nDiasPerfil ? Math.round(suma / nDiasPerfil) : 0,
+    }
+  })
+
+  // --- productividades del E-8 (grano resumen: tiempos informados) ---
+  const s = pickAgg._sum
+  const picking = s.minutos && s.minutos > 0
+    ? {
+        grano: 'resumen' as const,
+        bultos: s.bultos ?? 0,
+        prodTotal: r2((s.bultos ?? 0) / (s.minutos / 60)),
+        prodNeta: s.netoMin ? r2((s.bultos ?? 0) / (s.netoMin / 60)) : null,
+        prodSuperNeta: s.superNetoMin ? r2((s.bultos ?? 0) / (Math.min(s.superNetoMin, s.netoMin ?? s.superNetoMin) / 60)) : null,
+        pctMuerto: r1(((s.muertoMin ?? 0) / s.minutos) * 100),
+      }
+    : null
+
+  return {
+    ola: { prom: prom(diasConOla), mediana: med(diasConOla), dias: diasConOla.length },
+    pendiente: { prom: prom(diasConPend), mediana: med(diasConPend), dias: diasConPend.length },
+    demandaTotal: { prom: prom(diasTotales), mediana: med(diasTotales), dias: diasTotales.length },
+    porDiaSemana,
+    h61: {
+      dias: diasH61.size,
+      bultos: bultosTot,
+      horas: horasTot,
+      ritmoGlobal: horasTot ? r1(bultosTot / horasTot) : null,
+      ritmoBase: horasTot - extrasTot > 0 ? r1(baseTot / (horasTot - extrasTot)) : null,
+      ritmoExtras: extrasTot ? r1(extrasBulTot / extrasTot) : null,
+      pctExtras: bultosTot ? r1((extrasBulTot / bultosTot) * 100) : 0,
+      porTurno,
+    },
+    picking,
+    perfilHora,
+  }
 }
 
 // ============ STATUS ============
