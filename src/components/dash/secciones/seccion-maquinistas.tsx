@@ -71,7 +71,11 @@ function pearson(a: number[], b: number[]): number | null {
 
 export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqData; esperaPikingPorHora: { hora: number; etiqueta: string; minutos: number }[] }) {
   const [filtroOp, setFiltroOp] = useState('')
-  const movPorHora = data.porHora.map((p) => p.total)
+  // datos de apoyo tolerantes a ausencia (el modulo maq puede venir vacio)
+  const porHora = data.porHora ?? []
+  const celdasCalor = data.calorApros?.celdas ?? []
+  const movPorPersona = data.movPorPersonaMes ?? []
+  const movPorHora = porHora.map((p) => p.total)
 
   // ---- cruce movimientos por hora vs espera de piking por hora ----
   const cruce = useMemo(() => {
@@ -80,7 +84,7 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
     const hayMov = movPorHora.some((m) => m > 0)
     if (!hayEspera || !hayMov) return null
     const r = pearson(movPorHora, espera)
-    const union = data.porHora.map((p, i) => ({
+    const union = porHora.map((p, i) => ({
       etiqueta: p.etiqueta,
       movimientos: p.total,
       esperaMin: esperaPikingPorHora[i]?.minutos ?? 0,
@@ -89,12 +93,12 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
     const topEspera = [...union].sort((a, b) => b.esperaMin - a.esperaMin).slice(0, 4)
     const coinciden = topMov.filter((m) => topEspera.some((e) => e.etiqueta === m.etiqueta)).length
     return { r, union, topMov, topEspera, coinciden }
-  }, [data.porHora, esperaPikingPorHora, movPorHora])
+  }, [porHora, esperaPikingPorHora, movPorHora])
 
-  const calorMax = Math.max(1, ...data.calorApros.celdas.map((c) => c.mov))
-  const calorMap = new Map(data.calorApros.celdas.map((c) => [`${c.mes}|${c.actividad}`, c]))
+  const calorMax = Math.max(1, ...celdasCalor.map((c) => c.mov))
+  const calorMap = new Map(celdasCalor.map((c) => [`${c.mes}|${c.actividad}`, c]))
 
-  const movFiltrado = data.movPorPersonaMes.filter((m) => {
+  const movFiltrado = movPorPersona.filter((m) => {
     if (!filtroOp.trim()) return true
     const q = filtroOp.toLowerCase()
     return m.nombre.toLowerCase().includes(q) || m.operario.toLowerCase().includes(q)
