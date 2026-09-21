@@ -866,12 +866,18 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
   const turnosMap = new Map<string, number>()
   const diasMap = new Map<string, number>()
   const horasMap = new Map<number, number>()
+  // minutos de ESPERA DE PICKING por hora (cruce con movimientos de clark por horario)
+  const horasEsperaMap = new Map<number, number>()
   const detalles = new Map<string, { minutos: number; registros: number }>()
   for (const r of rows) {
     turnosMap.set(r.turno, (turnosMap.get(r.turno) ?? 0) + r.minutosEf)
     const k = dia(r.fecha)
     diasMap.set(k, (diasMap.get(k) ?? 0) + r.minutosEf)
-    if (r.horaDesde != null) horasMap.set(Math.floor(r.horaDesde / 60), (horasMap.get(Math.floor(r.horaDesde / 60)) ?? 0) + r.minutosEf)
+    if (r.horaDesde != null) {
+      const h = Math.floor(r.horaDesde / 60)
+      horasMap.set(h, (horasMap.get(h) ?? 0) + r.minutosEf)
+      if (unificarCategoria(r.categoria) === 'ESPERA PICKING') horasEsperaMap.set(h, (horasEsperaMap.get(h) ?? 0) + r.minutosEf)
+    }
     const dk = r.detalle ?? '(sin dato)'
     let d = detalles.get(dk)
     if (!d) { d = { minutos: 0, registros: 0 }; detalles.set(dk, d) }
@@ -882,6 +888,7 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
   const porTurno = [...turnosMap.entries()].map(([t, minutos]) => ({ turno: t, nombre: NOM_TURNO[t] ?? t, minutos })).sort((a, b) => b.minutos - a.minutos)
   const porDia = [...diasMap.entries()].sort().map(([fecha, minutos]) => ({ fecha, minutos }))
   const porHora = Array.from({ length: 24 }, (_, h) => ({ hora: h, etiqueta: `${String(h).padStart(2, '0')}:00`, minutos: horasMap.get(h) ?? 0 }))
+  const porHoraEsperaPiking = Array.from({ length: 24 }, (_, h) => ({ hora: h, etiqueta: `${String(h).padStart(2, '0')}:00`, minutos: horasEsperaMap.get(h) ?? 0 }))
   const topDetalles = [...detalles.entries()].map(([detalle, v]) => ({ detalle, ...v })).sort((a, b) => b.minutos - a.minutos).slice(0, 25)
 
   // cruces codigo x categoria
@@ -905,6 +912,7 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
     porTurno,
     porDia,
     porHora,
+    porHoraEsperaPiking,
     topDetalles,
     codigoCategoria,
     navesResumen: {
