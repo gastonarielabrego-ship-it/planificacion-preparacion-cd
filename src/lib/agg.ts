@@ -868,8 +868,6 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
   const horasMap = new Map<number, number>()
   // minutos de ESPERA DE PICKING por hora (cruce con movimientos de clark por horario)
   const horasEsperaMap = new Map<number, number>()
-  // mapa de calor día de semana × hora: minutos muertos acumulados del período
-  const calorHoraMap = new Map<string, number>()
   const detalles = new Map<string, { minutos: number; registros: number }>()
   for (const r of rows) {
     turnosMap.set(r.turno, (turnosMap.get(r.turno) ?? 0) + r.minutosEf)
@@ -878,7 +876,6 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
     if (r.horaDesde != null) {
       const h = Math.floor(r.horaDesde / 60)
       horasMap.set(h, (horasMap.get(h) ?? 0) + r.minutosEf)
-      calorHoraMap.set(`${r.fecha.getUTCDay()}|${h}`, (calorHoraMap.get(`${r.fecha.getUTCDay()}|${h}`) ?? 0) + r.minutosEf)
       if (unificarCategoria(r.categoria) === 'ESPERA PICKING') horasEsperaMap.set(h, (horasEsperaMap.get(h) ?? 0) + r.minutosEf)
     }
     const dk = r.detalle ?? '(sin dato)'
@@ -892,18 +889,6 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
   const porDia = [...diasMap.entries()].sort().map(([fecha, minutos]) => ({ fecha, minutos }))
   const porHora = Array.from({ length: 24 }, (_, h) => ({ hora: h, etiqueta: `${String(h).padStart(2, '0')}:00`, minutos: horasMap.get(h) ?? 0 }))
   const porHoraEsperaPiking = Array.from({ length: 24 }, (_, h) => ({ hora: h, etiqueta: `${String(h).padStart(2, '0')}:00`, minutos: horasEsperaMap.get(h) ?? 0 }))
-  // mapa de calor día × hora (valores en HORAS: minutos acumulados / 60)
-  const calorHora = {
-    dias: ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'],
-    horas: Array.from({ length: 24 }, (_, h) => ({
-      hora: h,
-      etiqueta: `${String(h).padStart(2, '0')}h`,
-      valores: [1, 2, 3, 4, 5, 6, 0].map((dw) => {
-        const v = calorHoraMap.get(`${dw}|${h}`)
-        return v ? +(v / 60).toFixed(1) : null
-      }),
-    })),
-  }
   const topDetalles = [...detalles.entries()].map(([detalle, v]) => ({ detalle, ...v })).sort((a, b) => b.minutos - a.minutos).slice(0, 25)
 
   // cruces codigo x categoria
@@ -928,7 +913,6 @@ export async function getTM(f: Filtros & { incluirBajas?: boolean }) {
     porDia,
     porHora,
     porHoraEsperaPiking,
-    calorHora,
     topDetalles,
     codigoCategoria,
     navesResumen: {
@@ -1429,6 +1413,9 @@ export async function getMaquinistas(f: Filtros) {
   // ---- MOVIMIENTOS POR HORARIO (HORA_00..23 del reporte) ----
   const horaTotal = new Array(24).fill(0)
   const horaTurno = new Map<string, number[]>()
+  // mapa de calor día de semana × hora: movimientos acumulados por dw|hora,
+  // normalizados por la cantidad de días de ese día de la semana (promedio por día)
+  const horaDiaMap = new Map<string, number>()
   // mismo perfil pero SOLO de los movimientos de apros: el reporte trae apros por
   // fila (no por hora), se reparte cada HORA_h según la proporción apros/total de la fila
   const horaApros = new Array(24).fill(0)
@@ -1484,12 +1471,14 @@ export async function getMaquinistas(f: Filtros) {
     if (!ht) { ht = new Array(24).fill(0); horaTurno.set(rw.turno, ht) }
     const aprosRow0 = (rw as { apros?: number }).apros ?? 0
     const shareApros = rw.total > 0 ? aprosRow0 / rw.total : 0
+    const dwRow = new Date(fISO + 'T00:00:00.000Z').getUTCDay()
     for (let h = 0; h < 24; h++) {
       const v = rr[`hora${String(h).padStart(2, '0')}`] ?? 0
       if (v > 0) {
         tieneHorario = true
         horaTotal[h] += v
         ht[h] += v
+        horaDiaMap.set(`${dwRow}|${h}`, (horaDiaMap.get(`${dwRow}|${h}`) ?? 0) + v)
         if (shareApros > 0) horaApros[h] += v * shareApros
       }
     }
@@ -1799,6 +1788,27 @@ export async function getMaquinistas(f: Filtros) {
       etiqueta: `${String(h).padStart(2, '0')}h`,
       total: r1(horaApros[h] / diasSet.size),
     })),
+    // mapa de calor día de semana × hora: movimientos promedio por día de ese
+    // día de la semana (normaliza sábados con menos ocurrencias)
+    calorHora: (() => {
+      const diasDow = new Map<number, number>()
+      for (const f of diasSet) {
+        const dw = new Date(f + 'T00:00:00.000Z').getUTCDay()
+        diasDow.set(dw, (diasDow.get(dw) ?? 0) + 1)
+      }
+      return {
+        dias: ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'],
+        horas: Array.from({ length: 24 }, (_, h) => ({
+          hora: h,
+          etiqueta: `${String(h).padStart(2, '0')}h`,
+          valores: [1, 2, 3, 4, 5, 6, 0].map((dw) => {
+            const suma = horaDiaMap.get(`${dw}|${h}`) ?? 0
+            const nDias = diasDow.get(dw) ?? 0
+            return nDias ? +(suma / nDias).toFixed(1) : null
+          }),
+        })),
+      }
+    })(),
     horaPico: (() => {
       if (!tieneHorario) return null
       let best = 0

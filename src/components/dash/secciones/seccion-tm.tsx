@@ -24,7 +24,6 @@ export interface TMData {
   porTurno: { turno: string; nombre: string; minutos: number }[]
   porHora: { hora: number; etiqueta: string; minutos: number }[]
   porHoraEsperaPiking: { hora: number; etiqueta: string; minutos: number }[]
-  calorHora: { dias: string[]; horas: { hora: number; etiqueta: string; valores: (number | null)[] }[] }
   navesResumen: { minutos: number; naves: number; pasillos: number }
 }
 
@@ -161,16 +160,17 @@ export interface PickingData {
   productividad: { total: number | null; neta: number | null; superNeta: number | null }
 }
 
-export function SeccionE8({ data, calorHora }: { data: PickingData; calorHora?: TMData['calorHora'] }) {
+export function SeccionE8({ data, porHoraMuertos }: { data: PickingData; porHoraMuertos?: TMData['porHora'] }) {
   if (data.vacio || !data.registros) return null
   const esResumen = data.grano === 'resumen'
 
   const prom = esResumen ? data.muertoBloques.promedio : data.gapPromedio
   const med = esResumen ? data.muertoBloques.mediana : data.gapMediana
   const heatMax = Math.max(1, ...(data.muertoHeat?.turnos.flatMap((t) => t.valores.filter((v): v is number => v != null)) ?? [1]))
-  // mapa de calor por hora (del módulo tiempos muertos): solo horas con algún dato
-  const filasCalorHora = (calorHora?.horas ?? []).filter((f) => f.valores.some((v) => v != null))
-  const calorHoraMax = Math.max(1, ...filasCalorHora.flatMap((f) => f.valores.filter((v): v is number => v != null)))
+  // mapa de calor SOLO por hora del día: horas muertas del período en cada hora
+  // (fuente: tiempos muertos informados con hora, módulo TM)
+  const calorHoraValores = (porHoraMuertos ?? []).map((p) => +(p.minutos / 60).toFixed(1))
+  const calorHoraMax = Math.max(1, ...calorHoraValores)
   const muertoTurnoHoras = data.muertoPorTurno.map((t) => ({ ...t, horas: +(t.minutosMuerto / 60).toFixed(1) }))
 
   return (
@@ -223,33 +223,29 @@ export function SeccionE8({ data, calorHora }: { data: PickingData; calorHora?: 
             </div>
           )}
 
-          {/* Mapa de calor dia x hora (fuente: tiempos muertos informados con hora) */}
-          {filasCalorHora.length > 0 && (
+          {/* Mapa de calor SOLO por hora del día */}
+          {calorHoraValores.length > 0 && (
             <div>
-              <p className="text-sm font-medium mb-2">Mapa de calor día de la semana × hora del día (horas muertas del período)</p>
-              <p className="text-xs text-muted-foreground mb-2">Cada celda suma las horas muertas informadas en ese día y esa hora a lo largo del período — más oscuro = más tiempo perdido</p>
-              <div className="overflow-x-auto max-h-[420px]">
-                <table className="w-full border-collapse text-[11px]">
+              <p className="text-sm font-medium mb-2">Mapa de calor por hora del día (horas muertas del período)</p>
+              <p className="text-xs text-muted-foreground mb-2">Cada celda suma las horas muertas informadas en esa hora a lo largo del período — más oscuro = más tiempo perdido</p>
+              <div className="overflow-x-auto">
+                <table className="border-collapse text-[10px]">
                   <thead>
                     <tr>
-                      <th className="border p-1.5 text-left bg-muted/40 sticky top-0 bg-background">Hora</th>
-                      {calorHora?.dias.map((d) => <th key={d} className="border p-1.5 bg-muted/40 sticky top-0">{d}</th>)}
+                      {(porHoraMuertos ?? []).map((p) => <th key={p.hora} className="border p-1 bg-muted/40 font-medium whitespace-nowrap">{String(p.hora).padStart(2, '0')}h</th>)}
                     </tr>
                   </thead>
                   <tbody>
-                    {filasCalorHora.map((f) => (
-                      <tr key={f.hora}>
-                        <td className="border p-1.5 font-medium whitespace-nowrap">{f.etiqueta}</td>
-                        {f.valores.map((v, i) => {
-                          const inten = v != null ? v / calorHoraMax : 0
-                          return (
-                            <td key={i} className="border p-1.5 text-center tabular-nums" style={{ backgroundColor: v != null ? `rgba(240, 138, 0, ${0.1 + 0.8 * inten})` : undefined, color: inten > 0.55 ? '#fff' : undefined }}>
-                              {v != null ? n1(v) : '—'}
-                            </td>
-                          )
-                        })}
-                      </tr>
-                    ))}
+                    <tr>
+                      {calorHoraValores.map((v, i) => {
+                        const inten = v / calorHoraMax
+                        return (
+                          <td key={i} className="border p-1 text-center tabular-nums min-w-[44px]" style={{ backgroundColor: v > 0 ? `rgba(240, 138, 0, ${0.1 + 0.8 * inten})` : undefined, color: inten > 0.55 ? '#fff' : undefined }}>
+                            {v > 0 ? n1(v) : '—'}
+                          </td>
+                        )
+                      })}
+                    </tr>
                   </tbody>
                 </table>
               </div>

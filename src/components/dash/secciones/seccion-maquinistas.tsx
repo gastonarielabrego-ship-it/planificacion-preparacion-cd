@@ -2,21 +2,18 @@
 
 // Sección "Maquinistas (clarkistas)" del Resumen: personas por actividad,
 // personas por tarea y actividad (apros vs homogéneos), distribución por turno,
-// movimientos por mes por persona (foco apros), mapa de calor de apros por
-// actividad, movimientos por horario y el CRUCE con los tiempos muertos:
-// ¿los movimientos coinciden con la espera de piking?
+// mapa de calor de apros por actividad, mapa de calor día × hora de movimientos,
+// movimientos por horario y el CRUCE con los tiempos muertos:
+// ¿los movimientos de apros coinciden con la espera de piking?
 
 import { useMemo } from 'react'
-import { Forklift, Users, Layers, Clock, GitCompareArrows, Search } from 'lucide-react'
+import { Forklift, Users, Layers, Clock, GitCompareArrows } from 'lucide-react'
 import { Kpi, SinDatos } from '../kpi'
 import { n, n1, COLORES, GG_VERDE, GG_NARANJA, GG_GRIS } from '@/lib/client'
 import { ComposedChart, BarChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
-import { useState } from 'react'
 
 const MESES_ABR = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 const etiquetaMes = (ym: string) => `${MESES_ABR[parseInt(ym.slice(5, 7), 10) - 1] ?? ym.slice(5, 7)} ${ym.slice(2, 4)}`
@@ -42,7 +39,7 @@ export interface MaqData {
   tieneHorario: boolean
   porTurno: { turno: string; personasPromDia: number | null; operarios: number; movimientos: number; bultos: number; porActividad: { actividad: string; personasProm: number | null; operarios: number }[]; personasPromApros: number | null; personasPromHom: number | null; porTareaActividad: { tarea: string; actividad: string; codigo: string; personasPromDia: number | null; operarios: number; movimientos: number }[] }[]
   porMesActividad: { mes: string; actividad: string; personasProm: number }[]
-  movPorPersonaMes: { operario: string; nombre: string; mes: string; apros: number; homogeneos: number; total: number; bultos: number }[]
+  calorHora: { dias: string[]; horas: { hora: number; etiqueta: string; valores: (number | null)[] }[] }
   calorApros: { meses: string[]; actividades: string[]; celdas: { mes: string; actividad: string; mov: number; personas: number }[] }
   tareas: {
     movApros: number
@@ -71,14 +68,12 @@ function pearson(a: number[], b: number[]): number | null {
 }
 
 export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqData; esperaPikingPorHora: { hora: number; etiqueta: string; minutos: number }[] }) {
-  const [filtroOp, setFiltroOp] = useState('')
   // datos de apoyo tolerantes a ausencia (el modulo maq puede venir vacio)
   const porHora = data.porHora ?? []
   // foco apros: movimientos de los clarks que hacen apros por hora (el espera de
   // piking se resuelve con aprontamiento, no con movimientos de homogeneos)
   const porHoraApros = data.porHoraApros ?? porHora.map((p) => ({ hora: p.hora, etiqueta: p.etiqueta, total: 0 }))
   const celdasCalor = data.calorApros?.celdas ?? []
-  const movPorPersona = data.movPorPersonaMes ?? []
   const movPorHora = porHoraApros.map((p) => p.total)
 
   // ---- cruce movimientos de apros por hora vs espera de piking por hora ----
@@ -102,11 +97,9 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
   const calorMax = Math.max(1, ...celdasCalor.map((c) => c.mov))
   const calorMap = new Map(celdasCalor.map((c) => [`${c.mes}|${c.actividad}`, c]))
 
-  const movFiltrado = movPorPersona.filter((m) => {
-    if (!filtroOp.trim()) return true
-    const q = filtroOp.toLowerCase()
-    return m.nombre.toLowerCase().includes(q) || m.operario.toLowerCase().includes(q)
-  })
+  // mapa de calor día × hora de los movimientos de clarks: filas de horas con algún dato
+  const filasCalorHora = (data.calorHora?.horas ?? []).filter((f) => f.valores.some((v) => v != null))
+  const calorHoraMax = Math.max(1, ...filasCalorHora.flatMap((f) => f.valores.filter((v): v is number => v != null)))
 
   if (data.vacio) return <SinDatos mensaje="Cargá el archivo H61 de maquinistas (clarkistas) para ver esta sección." />
 
@@ -271,6 +264,43 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
         </CardContent>
       </Card>
 
+      {/* Mapa de calor día x hora de los movimientos de clarks */}
+      {filasCalorHora.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Mapa de calor día de la semana × hora — movimientos de clarks</CardTitle>
+            <CardDescription>Cada celda muestra los movimientos promedio de clarkistas en ese día y esa hora (más oscuro = más movimiento)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto max-h-[520px]">
+              <table className="border-collapse text-[10px]">
+                <thead>
+                  <tr>
+                    <th className="border p-1.5 text-left bg-muted/40 sticky top-0 bg-background">Hora</th>
+                    {data.calorHora?.dias.map((d) => <th key={d} className="border p-1.5 bg-muted/40 sticky top-0">{d}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filasCalorHora.map((f) => (
+                    <tr key={f.hora}>
+                      <td className="border p-1.5 font-medium whitespace-nowrap">{f.etiqueta}</td>
+                      {f.valores.map((v, i) => {
+                        const inten = v != null ? v / calorHoraMax : 0
+                        return (
+                          <td key={i} className="border p-1.5 text-center tabular-nums" style={{ backgroundColor: v != null ? `rgba(124, 185, 62, ${0.12 + 0.78 * inten})` : undefined, color: inten > 0.55 ? '#fff' : undefined }}>
+                            {v != null ? n1(v) : '—'}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* CRUCE con tiempos muertos */}
       {cruce && (
         <Card>
@@ -351,50 +381,6 @@ export function SeccionMaquinistas({ data, esperaPikingPorHora }: { data: MaqDat
         </Card>
       )}
 
-      {/* Movimientos por mes por persona (foco apros) */}
-      {data.movPorPersonaMes.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Movimientos por mes por persona (foco en apros)</CardTitle>
-            <CardDescription>Ordenado por movimientos de apros. Buscá a una persona con el buscador; hasta {n(data.movPorPersonaMes.length)} registros persona-mes</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="relative max-w-sm">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Buscar persona…" value={filtroOp} onChange={(e) => setFiltroOp(e.target.value)} className="pl-8" />
-            </div>
-            <ScrollArea className="h-[420px] rounded-md border">
-              <Table>
-                <TableHeader className="sticky top-0 bg-background">
-                  <TableRow>
-                    <TableHead>Mes</TableHead>
-                    <TableHead>Persona</TableHead>
-                    <TableHead className="text-right">Apros</TableHead>
-                    <TableHead className="text-right">Homogéneos</TableHead>
-                    <TableHead className="text-right">Total mov.</TableHead>
-                    <TableHead className="text-right">Bultos</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {movFiltrado.map((m, i) => (
-                    <TableRow key={`${m.operario}-${m.mes}-${i}`}>
-                      <TableCell className="whitespace-nowrap">{etiquetaMes(m.mes)}</TableCell>
-                      <TableCell className="font-medium">{m.nombre}</TableCell>
-                      <TableCell className="text-right tabular-nums font-semibold text-emerald-700">{n(m.apros)}</TableCell>
-                      <TableCell className="text-right tabular-nums text-amber-700">{n(m.homogeneos)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{n(m.total)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{n(m.bultos)}</TableCell>
-                    </TableRow>
-                  ))}
-                  {movFiltrado.length === 0 && (
-                    <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-6">Sin resultados para “{filtroOp}”</TableCell></TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </ScrollArea>
-          </CardContent>
-        </Card>
-      )}
     </div>
   )
 }

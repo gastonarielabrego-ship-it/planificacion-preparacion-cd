@@ -141,7 +141,7 @@ export function ResumenTab({ onIrACarga }: { onIrACarga: () => void }) {
       {picking.data && !picking.data.vacio && picking.data.registros > 0 && (
         <section className="space-y-4">
           <TituloSeccion icono={Boxes} titulo="6 · E-8 — tiempo muerto entre piking" detalle="Promedio y mediana del tiempo muerto entre piking, mapa de calor por turno y por hora, % de la jornada y naves donde se identifica" />
-          <SeccionE8 data={picking.data} calorHora={tm.data?.calorHora} />
+          <SeccionE8 data={picking.data} porHoraMuertos={tm.data?.porHora} />
         </section>
       )}
     </div>
