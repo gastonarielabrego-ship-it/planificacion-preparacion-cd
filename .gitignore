@@ -64,3 +64,4 @@ server.log
 .zscripts/
 mini-services/*/node_modules
 examples/tool-results/
+tool-results/

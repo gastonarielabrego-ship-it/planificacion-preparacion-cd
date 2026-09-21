@@ -15,9 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Planificación — Preparación CD",
-  description: "Planificación del área de preparación del centro de distribución: olas, productividad H61, extras 8h/12h, tiempos muertos y horas pico/valle.",
-  keywords: ["centro de distribución", "preparación", "picking", "olas", "tiempos muertos", "planificación"],
+  title: "Grupo Gestión — Planificación Preparación CD",
+  description: "Planificación del área de preparación del centro de distribución: olas, capacidad H61, productividad, maquinistas y tiempos muertos, con modelo de planificación de dotación.",
+  keywords: ["Grupo Gestión", "centro de distribución", "preparación", "picking", "olas", "tiempos muertos", "planificación"],
 };
 
 export default function RootLayout({

@@ -49,5 +49,9 @@ export function horasHMin(min: number): string {
   return `${fmt.format(h)} h ${m} min`
 }
 
-// Paleta del dashboard (sin azules/indigo)
-export const COLORES = ['#059669', '#d97706', '#dc2626', '#0d9488', '#7c3aed', '#db2777', '#65a30d', '#ea580c', '#0f766e', '#525252', '#a16207', '#9f1239']
+// Paleta institucional Grupo Gestion: verde #7CB93E, naranja #F08A00, gris #58595B
+export const GG_VERDE = '#7CB93E'
+export const GG_NARANJA = '#F08A00'
+export const GG_GRIS = '#58595B'
+export const GG_VERDE_OSCURO = '#5C9429'
+export const COLORES = [GG_VERDE, GG_NARANJA, GG_GRIS, '#0d9488', '#dc2626', '#7c3aed', GG_VERDE_OSCURO, '#ea580c', '#a3a3a3', '#65a30d', '#a16207', '#9f1239']
